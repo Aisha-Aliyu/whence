@@ -74,7 +74,7 @@ Accessibility: WCAG 2.2 AA. Everything works with a keyboard alone and with a sc
 
 Screens: from 280 px wide (the smallest folding-phone cover screens) to 2560 px and wider, with no horizontal scrolling.
 
-Availability: 99.5% per month for the API. That allows about 3.6 hours of downtime a month, which is our error budget.
+Availability: on free hosting we publish measured uptime and wake-up time instead of promising a number, because free servers sleep when idle. Once the API runs on an always-on host, the target becomes 99.5% a month. That allows about 3.6 hours of downtime a month, which is our error budget.
 
 ## How we will know it works
 

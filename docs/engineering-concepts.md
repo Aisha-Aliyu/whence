@@ -39,7 +39,7 @@ How Whence handles the problems production systems run into. Each row says what 
 | Eventual consistency | Data becomes correct after a delay | A new upload joins search results only after processing finishes. The UI shows its status the whole time | 8 |
 | Replication and read replicas | Copies of the database, often used to spread read load | Not needed yet. We add a read replica when reads outgrow one instance | - |
 | Sharding and partitioning | Splitting data across servers or tables | Not needed. If `chunks` reaches tens of millions of rows, we partition it by workspace | - |
-| Backups | Copies we can restore from | The free database plan has no automatic backups, so a scheduled job takes an encrypted `pg_dump` to separate free storage, and we practise restoring it | 22 |
+| Backups | Copies we can restore from | The free database plan has no automatic backups, so a scheduled GitHub Actions workflow takes an encrypted `pg_dump`, with the key kept in GitHub secrets, and keeps it as a workflow artifact for up to 90 days. We practise restoring it | 22 |
 | Disaster recovery | The plan for getting service back after losing a system | A written runbook with two targets: a recovery point objective (RPO) of 24 hours, so we lose at most a day of data, and a recovery time objective (RTO) of 4 hours. A restore that long spends more than the month's 3.6-hour error budget, which is the budget doing its job: once it is spent, feature work stops until reliability recovers | 22 |
 
 ## Reliability
@@ -54,12 +54,12 @@ How Whence handles the problems production systems run into. Each row says what 
 | Backpressure | Telling producers to slow down when consumers are full | Bounded worker concurrency, and HTTP 429 with `Retry-After` when queues are full | 7, 11 |
 | Message queues | Handing work to a background process | The `jobs` table in Postgres | 7 |
 | Dead letter queues | Where work goes after too many failures | Jobs move to `dead_letter` after 5 attempts, and admins can see why | 8 |
-| Pub/sub | One publisher, many listeners | Postgres `LISTEN/NOTIFY` wakes a long-running worker as soon as a job arrives, over a session-mode connection. If our free host cannot keep a worker running, the API starts each job itself and a scheduled sweep picks up anything missed | 7 |
+| Pub/sub | One publisher, many listeners | Postgres `LISTEN/NOTIFY` wakes a long-running worker as soon as a job arrives, over a session-mode connection. If our free host cannot keep a worker running, the API starts each job itself, and a scheduled GitHub Actions workflow calls a protected sweep endpoint to pick up anything missed | 7 |
 | Event-driven architecture | Parts of the system react to events instead of calling each other directly | An upload creates a job, the job's status changes stream to the UI | 7 |
 | Webhooks | Another service calls your URL when something happens | We verify the signature of every webhook we receive. Sending webhooks to customers is version 2 | 6 |
 | Health checks | An endpoint that reports whether the service works | `/healthz` answers if the process is alive. `/readyz` also checks the database | 4 |
 | Liveness and readiness probes | Restart a dead instance; send no traffic to one that is not ready | The host polls `/healthz` and `/readyz` | 4, 22 |
-| Failover | Switching to a standby when the primary fails | Version 1 runs one database instance, so recovery means restoring from backup within the disaster recovery targets. Automatic failover needs a standby database, which no free plan offers | 22 |
+| Failover | Switching to a standby when the primary fails | Version 1 runs one database instance, so recovery means restoring from backup within the disaster recovery targets. Automatic failover needs a standby database, which Supabase's free plan does not include | 22 |
 | Chaos engineering | Breaking things on purpose to prove the system recovers | Kill the worker in the middle of a job, cut off the model API, slow the database, and check that everything recovers | 20 |
 | Network partitions | Parts of the system cannot reach each other | Job leases expire so another worker retries, and writes are idempotent | 7, 20 |
 | Clock skew | Machines disagree about the time | Leases use the database clock (`now()`), and token checks allow a few seconds of leeway | 6, 7 |
@@ -120,7 +120,7 @@ How Whence handles the problems production systems run into. Each row says what 
 | Server-Sent Events | A one-way stream from server to browser over HTTP | Streaming answers and document status | 11 |
 | gRPC | A binary protocol for calls between services | Not needed. We have one public HTTP API and no internal service calls | - |
 | DNS | The system that turns names into addresses | Records for the web app and the API on our free domain, if eu.org approves it. A host's free subdomain needs no DNS work | 23 |
-| Cron jobs | Tasks that run on a schedule | Backups, cleanup of expired invites and orphaned files, nightly evaluations | 12, 22 |
+| Cron jobs | Tasks that run on a schedule | Backups, cleanup of expired invites and orphaned files, nightly evaluations and the job sweep, run as scheduled GitHub Actions workflows, which are free for public repositories | 12, 22 |
 
 ## Observability
 
@@ -132,4 +132,4 @@ How Whence handles the problems production systems run into. Each row says what 
 | Monitoring | Watching those numbers | Dashboards built around our SLIs | 13 |
 | Alerting | Telling a person when something is wrong | Alerts when we burn error budget too fast or jobs keep failing, sent to email and phone | 13 |
 | Observability | Being able to answer new questions about a running system | Logs, metrics and traces linked by request ID | 13 |
-| SLIs, SLOs and error budgets | What we measure, the target we promise, and how much failure the target allows | 99.5% monthly availability for the API, plus latency targets for asking | 13 |
+| SLIs, SLOs and error budgets | What we measure, the target we promise, and how much failure the target allows | Measured uptime and latency while we are on free hosting, then 99.5% monthly availability for the API once it runs on an always-on host | 13 |
