@@ -17,7 +17,10 @@ These folders do not exist yet. Each arrives in its own pull request, so do not 
 
 ## Commands
 
-No build, lint or test commands exist yet. Every pull request that adds tooling also adds its commands to this section.
+- Package check tests: `python3 -m unittest discover --start-directory .claude/hooks --verbose`
+- Package check lint and types: `uvx ruff check .claude/hooks`, `uvx ruff format --check .claude/hooks` and `uvx mypy --strict .claude/hooks`
+
+Every pull request that adds tooling also adds its commands to this section.
 
 ## How to work
 
@@ -29,7 +32,7 @@ No build, lint or test commands exist yet. Every pull request that adds tooling 
 - In the pull request description, explain what changed, why, the trade-offs, how you tested it and how to roll it back. Write it so Aisha can explain the change in a job interview.
 - If a request conflicts with these rules or puts users at risk, stop and say so instead of doing it.
 - Do not edit anything in `.github/workflows/`. Workflow files run with repository secrets, so a human adds them. Put the full proposed file in the pull request description instead.
-- Do not change CLAUDE.md, `.coderabbit.yaml` or anything else in `.github/` unless the task asks for it. A pull request that loosens its own review rules is a red flag.
+- Do not change CLAUDE.md, anything in `.claude/`, `.coderabbit.yaml` or anything else in `.github/` unless the task asks for it. A pull request that loosens its own review rules is a red flag.
 
 ## Budget
 
@@ -71,6 +74,8 @@ Before adding any package:
 3. Explain why we need it and what we would do without it.
 
 Pin versions through the lockfile. Never install from a URL, a git branch or a local path unless Aisha approves it.
+
+Add Python packages with `uv add <name>==<version>` and JavaScript packages with `pnpm add <name>@<version>`. A hook checks every install before it runs (docs/workflow.md, "The package check"). If it blocks one, do not work around it: tell Aisha what it blocked and why, with the links it gave. Only Aisha approves an exception, by adding the exact version to `.claude/approved-packages.txt` in a pull request.
 
 ## UI rules
 

@@ -55,8 +55,43 @@ Ten checks for every pull request:
 - Before adding a package, confirm it exists on PyPI or npm and link to it. Check the latest version, release history, maintainers, license and known vulnerabilities, and whether we need it at all.
 - Lockfiles pin every version (`uv.lock` for Python, `pnpm-lock.yaml` for the web app).
 - Dependabot opens grouped update pull requests every week. New versions wait 7 days before Dependabot proposes them, which keeps us away from freshly published malicious releases. Security fixes skip that wait.
-- From Day 2, a Claude Code hook checks every install command before it runs.
+- A Claude Code hook checks every package before Claude installs it. See [the package check](#the-package-check).
 - The dependency review check blocks pull requests that add packages with known vulnerabilities of moderate severity or worse.
+
+## The package check
+
+Claude Code runs [.claude/hooks/check_packages.py](../.claude/hooks/check_packages.py) before every shell command, as a PreToolUse hook set in [.claude/settings.json](../.claude/settings.json). The hook reads the command the way bash would and finds every package it would install, including installs inside `bash -c`, `$(...)` and a here-document that a shell runs. Each package must pass four checks:
+
+1. It exists on PyPI or npm. Attackers register package names that AI tools tend to invent, so a misspelled or made-up name can pull in malware. This attack is called slopsquatting.
+2. The package is at least 30 days old and the version at least 7 days old, because malicious releases are usually found and removed within days. In [one review of ten supply chain attacks](https://blog.yossarian.net/2025/11/21/We-should-all-be-using-dependency-cooldowns), eight were open for less than a week.
+3. [OSV](https://osv.dev), the open vulnerability database, which also collects malware reports, lists nothing against that version.
+4. The version is not yanked on PyPI or deprecated on npm.
+
+The hook also enforces how we install: Python packages with `uv add`, JavaScript packages with `pnpm add`, one-off tools with `uvx` and `pnpm dlx`, and nothing from a URL, a git repository, a local path, a custom index or a requirements file. Piping a download into a shell is blocked. Installs from the reviewed lockfiles (`uv sync`, `pnpm install`) run without checks.
+
+When every package passes, Claude receives each package's link and age, plus the latest version when an older one was pinned. When anything fails, the command does not run, and Claude receives the reason, the links and, for a version that is too new, an older version that passes. If a check cannot finish, for example because a registry is down, the command is blocked. Claude Code lets a hook that times out pass, so the script stops itself after 60 seconds and blocks.
+
+### Approving a new release
+
+Sometimes a version is needed before its 7 days are up, such as a security fix. Aisha decides, then adds the exact version to [.claude/approved-packages.txt](../.claude/approved-packages.txt) in a pull request, with the reason and the date. The hook reads that file from `origin/main`, not from the working branch, so Claude cannot approve its own install. An approval lifts only the age rules: the package must still exist and have no known vulnerability.
+
+### Network access
+
+The hook needs `pypi.org`, `registry.npmjs.org` and `api.osv.dev`. Codespaces reaches all three. A Claude Code cloud environment on the default **Trusted** network level reaches the registries but not OSV, so it blocks every install until OSV is allowed:
+
+1. In a Claude Code cloud session, tap the arrow after the session title at the top, then **Edit cloud environment**. On the new-session screen, the same dialog opens from the environment selector, the first control under the message box, through the settings icon on the environment's row.
+2. Set **Network access** to **Custom**.
+3. In **Allowed domains**, enter `api.osv.dev`.
+4. Tick **Also include default list of common package managers**, so the registries stay reachable.
+5. Save. Running sessions pick up the change within about a minute.
+
+### What it cannot do
+
+- It reads commands, so it cannot see installs that a script, a Makefile or a program performs, or a command disguised on purpose.
+- It checks the packages a command names, not their dependencies. The lockfile review in each pull request, the dependency review check, Dependabot's 7-day cooldown, and the package managers' own cooldowns (uv's `exclude-newer` from Day 4, pnpm's `minimumReleaseAge` from Day 14) cover those.
+- Claude Code reloads its settings when the file changes, so a session that edits `.claude/` could switch the check off. CLAUDE.md forbids editing `.claude/` unless the task asks for it, and CodeRabbit flags every change there. The hook guards against mistakes; the hard limits are the cloud environment's network allowlist and branch protection.
+
+Run its tests with `python3 -m unittest discover --start-directory .claude/hooks --verbose`.
 
 ## Working with Claude Code
 

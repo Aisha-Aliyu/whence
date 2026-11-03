@@ -1,0 +1,13 @@
+# Package versions Aisha approved before the cooldown ended.
+#
+# The package check (.claude/hooks/check_packages.py) blocks packages younger than
+# 30 days and versions younger than 7 days. A line here lifts those two age rules for
+# one exact version. The package must still exist and have no known vulnerability or
+# malware report in OSV.
+#
+# The check reads this file from origin/main, so a line counts only after its pull
+# request is reviewed and merged. Only Aisha adds lines. Claude never edits this file.
+#
+# One exact version per line, then the reason and the date:
+# pypi/<name>==<version>  # why it cannot wait, YYYY-MM-DD
+# npm/<name>@<version>  # why it cannot wait, YYYY-MM-DD
