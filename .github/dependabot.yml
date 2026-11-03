@@ -1,0 +1,20 @@
+# Dependabot keeps dependencies current.
+# Docs: https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference
+# Python (uv) and web (npm) entries arrive with the code that needs them.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # New releases wait 7 days before Dependabot proposes them. Security updates skip the wait.
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+    open-pull-requests-limit: 5
