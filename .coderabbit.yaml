@@ -1,0 +1,101 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit review settings for Whence. Docs: https://docs.coderabbit.ai
+language: en-US
+tone_instructions: "Be direct and specific. For each issue, say why it matters and how to fix it. The author is learning and will be asked about this code in interviews."
+early_access: false
+
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: false
+  sequence_diagrams: true
+  poem: false
+  in_progress_fortune: false
+  auto_review:
+    enabled: true
+    drafts: false
+
+  # Lockfiles change in bulk; the dependency review check covers them.
+  path_filters:
+    - "!**/uv.lock"
+    - "!**/pnpm-lock.yaml"
+
+  path_instructions:
+    - path: "api/**"
+      instructions: |
+        Python API. Check that SQL is always parameterized; that every route touching workspace data verifies membership and role on the server; that Pydantic models reject unknown fields; that no secrets or personal data reach logs; that every network call has a timeout; that retries cannot repeat a side effect; that there are no N+1 queries; and that errors never expose internals.
+    - path: "web/**"
+      instructions: |
+        Next.js and TypeScript. Check for tokens in localStorage or sessionStorage, dangerouslySetInnerHTML without sanitizing, redirects to user-supplied URLs, and protected pages or route handlers without a server-side auth check. Inputs need Zod validation. Colors, spacing and type must come from design tokens. Interactive elements need labels, visible focus and keyboard support. Flag gradients, glassmorphism, pill-shaped buttons, emojis, em dashes and en dashes in UI copy.
+    - path: "**/migrations/**"
+      instructions: |
+        Database migration. Check that it can be rolled back or has a written rollback plan, takes no long locks on large tables, enables row-level security with policies on every new workspace table, indexes foreign keys, and makes no destructive change without a deprecation step first.
+    - path: "**/alembic/**"
+      instructions: |
+        Database migration. Apply the same checks as for migrations: rollback path, no long locks, row-level security on new workspace tables, indexed foreign keys, no destructive change without a deprecation step.
+    - path: ".github/**"
+      instructions: |
+        Repository automation. Check that actions are pinned to full commit SHAs, permissions follow least privilege, pull_request_target never checks out untrusted code, secrets are never printed, and checkout sets persist-credentials to false.
+    - path: "docs/**"
+      instructions: |
+        Documentation. Flag factual errors, contradictions with other docs or with the code, broken links and security mistakes. Ignore wording preferences.
+    - path: "**/*.md"
+      instructions: |
+        Flag em dashes, en dashes, emojis and claims the project cannot back up.
+
+  pre_merge_checks:
+    title:
+      mode: "error"
+      requirements: "Use Conventional Commits: type(optional scope): summary, for example feat(api): add upload route. Allowed types: feat, fix, chore, docs, ci, refactor, test, perf, build."
+    description:
+      mode: "error"
+    docstrings:
+      mode: "off"
+    custom_checks:
+      - name: "Explains trade-offs"
+        mode: "warning"
+        instructions: "Pass if the pull request description says why this approach was chosen over at least one alternative and what it costs. Fail otherwise."
+      - name: "No secrets or personal data"
+        mode: "error"
+        instructions: "Fail if the diff adds API keys, tokens, passwords, private keys, connection strings that contain credentials, or any .env file other than .env.example. Pass otherwise."
+
+  # Security and correctness tools. All are on by default; listing them makes the setup visible.
+  tools:
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    osvScanner:
+      enabled: true
+    semgrep:
+      enabled: true
+    ruff:
+      enabled: true
+    shellcheck:
+      enabled: true
+    hadolint:
+      enabled: true
+    trivy:
+      enabled: true
+    checkov:
+      enabled: true
+    sqlfluff:
+      enabled: true
+    dotenvLint:
+      enabled: true
+    # Style-only linters create noise on prose; the docs instructions above cover what matters.
+    markdownlint:
+      enabled: false
+    languagetool:
+      enabled: false
+    yamllint:
+      enabled: false
+
+chat:
+  auto_reply: true

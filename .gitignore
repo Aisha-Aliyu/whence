@@ -1,0 +1,126 @@
+# Whence .gitignore
+# Secrets, installed dependencies, build output, logs and local data never enter git.
+
+# Folder patterns that start with / match only at that exact path. That keeps app
+# folders with the same names, such as web/app/logs/ or api/app/uploads/, tracked.
+
+# ---------- Secrets and credentials ----------
+.env
+.env.*
+*.env
+!.env.example
+.envrc
+.secrets/
+/secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ecdsa*
+id_ed25519*
+credentials.json
+service-account*.json
+*-service-account.json
+.pypirc
+*.tfvars
+*.tfvars.json
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.eggs/
+/build/
+/dist/
+/api/build/
+/api/dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+.ipynb_checkpoints/
+.langgraph_api/
+
+# ---------- Node and Next.js ----------
+node_modules/
+.pnpm-store/
+.next/
+/web/out/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+.eslintcache
+.stylelintcache
+/coverage/
+/web/coverage/
+storybook-static/
+
+# ---------- Test reports ----------
+playwright-report/
+test-results/
+blob-report/
+/playwright/.cache/
+
+# ---------- Hosting CLIs ----------
+.vercel/
+.netlify/
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# ---------- Logs ----------
+/logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- Local data that may hold real user content ----------
+# Keep local uploads, dumps and scratch files in a .data/ folder.
+.data/
+/uploads/
+/backups/
+/tmp/
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.sql.gz
+.cache/
+
+# ---------- Supabase CLI local state ----------
+supabase/.temp/
+supabase/.branches/
+
+# ---------- Editors and operating systems ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~
+
+# ---------- Personal Claude Code settings ----------
+.claude/settings.local.json
+CLAUDE.local.md

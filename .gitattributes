@@ -1,0 +1,25 @@
+# Store text files with LF line endings, whatever machine they come from.
+* text=auto eol=lf
+
+# Shell scripts must keep LF endings to run on Linux.
+*.sh text eol=lf
+
+# Binary files: never change line endings, never diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.avif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary
+*.gz binary
+
+# Lockfiles: collapsed by default in pull request diffs.
+uv.lock linguist-generated=true
+pnpm-lock.yaml linguist-generated=true
