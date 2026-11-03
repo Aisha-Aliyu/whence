@@ -1,0 +1,62 @@
+# Security checks for every pull request, every push to main, and once a week.
+# Every action is pinned to a full commit SHA, so a moved tag cannot swap the action's code.
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Mondays at 04:23 UTC. GitHub pauses schedules in public repositories after 60 days without activity.
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+# No permissions by default. Each job asks only for what it needs.
+permissions: {}
+
+# A new push to a pull request cancels the older run. Runs on main are never cancelled mid-run.
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # to list the commits in a pull request
+    steps:
+      - name: Check out the full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Pull request scans cover a pull request's first 30 commits (one API page).
+      # The scan on main and the weekly full scan cover everything.
+      # Free for repositories on a personal account. An organization needs a GITLEAKS_LICENSE secret.
+      - name: Scan for secrets with gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false" # findings appear in the job summary instead
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # No checkout needed: the action compares dependency graphs through the GitHub API.
+      - name: Block vulnerable new dependencies
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: runtime, development
+          comment-summary-in-pr: never # results go to the job summary, so the job needs no write access
+          show-openssf-scorecard: true
+          warn-on-openssf-scorecard-level: 3
