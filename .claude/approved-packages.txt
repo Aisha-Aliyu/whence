@@ -5,8 +5,9 @@
 # one exact version. The package must still exist and have no known vulnerability or
 # malware report in OSV.
 #
-# The check reads this file from origin/main, so a line counts only after its pull
-# request is reviewed and merged. Only Aisha adds lines. Claude never edits this file.
+# The check reads this file from main on GitHub, so a line counts only after its pull
+# request is reviewed and merged, and it can take a few minutes to show. Only Aisha
+# adds lines. Claude never edits this file.
 #
 # One exact version per line, then the reason and the date:
 # pypi/<name>==<version>  # why it cannot wait, YYYY-MM-DD

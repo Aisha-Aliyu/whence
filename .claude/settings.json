@@ -3,11 +3,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Monitor",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_packages.py\" || exit 2",
+            "command": "python3 -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_packages.py\" || exit 2",
             "timeout": 120
           }
         ]

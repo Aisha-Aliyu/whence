@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 """Check every package before Claude Code installs it.
 
-Claude Code runs this script before each Bash command (a PreToolUse hook, set up in
-.claude/settings.json). The script reads the command the way bash would, finds every
-package the command would install, and blocks the command unless each package passes
-these checks:
+Claude Code runs this script before each shell command it starts with the Bash or
+Monitor tools (a PreToolUse hook, set up in .claude/settings.json). The script reads
+the command the way bash would, finds every package the command would install, and
+blocks the command unless each package passes these checks:
 
 1. It exists on PyPI or npm, so a misspelled or invented name fails. Attackers
    register names that AI tools invent, which is called slopsquatting.
-2. The package is at least 30 days old and the chosen version at least 7 days old.
-   Malicious releases are usually found and removed within days.
+2. The package is at least 30 days old, and every file of the chosen version is at
+   least 7 days old. Malicious releases are usually found and removed within days.
 3. OSV, the open source vulnerability database, has no malware report and no known
    vulnerability for that version.
 4. The version is not yanked on PyPI or deprecated on npm.
 
 It also enforces the project's install rules: Python packages come from PyPI through
-uv, JavaScript packages come from npm through pnpm, and nothing installs from a URL,
-a git repository, a local path, a requirements file, or another index or registry
-set by an option or an environment variable. Bulk upgrades are blocked, because
-Dependabot proposes upgrades in reviewed pull requests. Running a downloaded script,
-by a pipe or in the same command that downloads it, is blocked too.
+uv, JavaScript packages come from npm through pnpm, always at an exact version, and
+nothing installs from a URL, a git repository, a local path, a requirements file, or
+another index or registry set by an option or an environment variable. Bulk upgrades
+are blocked, because Dependabot proposes upgrades in reviewed pull requests. Running
+a downloaded script, by a pipe or in the same command that downloads it, is blocked
+too.
 
 Exit code 0 lets the command run. Exit code 2 blocks it, and the message on stderr
 tells Claude why. If a check cannot finish, for example because a registry is
-unreachable, the command is blocked. Installs from the reviewed lockfiles
-(`uv sync`, `pnpm install`) run without checks.
+unreachable, the command is blocked. Installs from the lockfile (`uv sync`,
+`pnpm install`) run without checks.
 
 The script reads shell commands, so it cannot see installs that run inside a script,
 a Makefile or a program, or commands disguised on purpose. It guards against
@@ -39,7 +40,6 @@ import json
 import os
 import random
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -47,12 +47,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
-from pathlib import Path
 from typing import Any
 
 # ---------------------------------------------------------------- policy
@@ -67,11 +66,12 @@ HTTP_TIMEOUT_SECONDS = 15.0
 HTTP_ATTEMPTS = 2
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # a few npm packages have very large metadata
 MAX_JSON_BYTES = 300 * 1024 * 1024
+MAX_SCRIPT_BYTES = 1024 * 1024
 WORKERS = 2
 USER_AGENT = "whence-package-check/1 (+https://github.com/Aisha-Aliyu/whence)"
-REPO_ROOT = Path(__file__).resolve().parents[2]
-APPROVALS_FILE = ".claude/approved-packages.txt"
-APPROVALS_REF = "origin/main"
+# Approvals come from main on GitHub, so nothing in a session can fake one.
+APPROVALS_URL = "https://raw.githubusercontent.com/Aisha-Aliyu/whence/main/.claude/approved-packages.txt"
+SHELL_TOOLS = ("Bash", "Monitor")  # Claude Code tools that run shell commands
 PYPI = "PyPI"
 NPM = "npm"
 
@@ -92,6 +92,10 @@ DOWNLOAD_SUBSTITUTION = re.compile(
 PYTHON = re.compile(r"^python(\d+(\.\d+)?)?$")
 PIP = re.compile(r"^pip(3(\.\d+)?)?$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+# `$(which pnpm) add zod` runs pnpm.
+LOOKED_UP_PROGRAM = re.compile(
+    r"^(?:\$\(|`)\s*(?:which|command -v|type -P)\s+([\w.@/+-]+)\s*(?:\)|`)$"
+)
 RESERVED_WORDS = words("! { } if then else elif do while until")
 WRAPPERS = words(
     "sudo doas env nice ionice nohup setsid time timeout stdbuf command builtin exec"
@@ -113,6 +117,19 @@ WRAPPER_VALUE_FLAGS = {
 }
 # Programs that run a command handed to them as one string, as in `su -c "..."`.
 COMMAND_STRING_RUNNERS = words("su runuser flock script")
+# Programs whose arguments are never commands, so a word such as `pip` in
+# `grep -rn pip docs/` is only text.
+NO_COMMAND_ARGS = words(
+    "grep egrep fgrep rg ag ack which type whereis whatis apropos man info echo printf "
+    "cat head tail less more wc ls tree file stat realpath readlink basename dirname "
+    "tee jq yq sed awk sort uniq cut tr diff cmp comm touch mkdir rmdir rm cp mv ln "
+    "chmod chown du df cd pwd export unset alias test true false"
+)
+XARGS_VALUE_FLAGS = words(
+    "-n -P -L -d -E -s -a --max-args --max-procs --max-lines --delimiter --eof "
+    "--max-chars --arg-file --process-slot-var"
+)
+XARGS_INPUT = "xargs-input"  # stands for the words xargs reads from stdin
 
 # Settings that send installs to another index or registry, or turn off certificate
 # checks. They are blocked as options (--index-url, --registry, --config.registry)
@@ -132,6 +149,16 @@ UNUSED_JS_TOOLS = words("npx pnpx yarn yarnpkg bun bunx deno")
 INSTALL_TOOLS = (
     UNUSED_PYTHON_TOOLS | UNUSED_JS_TOOLS | words("pip pip3 uv uvx npm pnpm")
 )
+PACKAGE_MANAGERS = INSTALL_TOOLS | {"corepack"}
+# The programs `corepack <program>[@version]` runs, and the npm package each comes from.
+COREPACK_TOOLS = {
+    "pnpm": "pnpm",
+    "pnpx": "pnpm",
+    "yarn": "yarn",
+    "yarnpkg": "yarn",
+    "npm": "npm",
+    "npx": "npm",
+}
 INSTALL_WORD = re.compile(
     r"\b(pip3?|uvx?|pipx|npm|npx|pnpm|pnpx|yarn|bunx?|deno|poetry|pipenv|pdm|conda|"
     r"mamba|corepack|curl|wget)\b"
@@ -200,7 +227,11 @@ UV_BOOL_FLAGS = words(
     "--no-build-isolation --managed-python --no-managed-python --no-python-downloads "
     "--no-env-file --raw --raw-sources --workspace --no-workspace --seed -q -v -n"
 )
-UV_RUN_VALUE_FLAGS = UV_VALUE_FLAGS - {"-m"}  # `uv run -m pytest` runs a module
+UV_RUN_VALUE_FLAGS = UV_VALUE_FLAGS - {
+    "-m",
+    "--script",
+}  # in `uv run` both are switches
+UV_RUN_BOOL_FLAGS = UV_BOOL_FLAGS | {"-m", "--script", "-s"}
 # Options that install from a file or a local path. Index options are risky settings.
 UV_FILE_FLAGS = words(
     "-r --requirements --requirement -c --constraints --constraint --overrides "
@@ -237,7 +268,6 @@ NPM_NAME = re.compile(
 )
 EXACT_SEMVER = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$")
 NPM_RELEASE = re.compile(r"^\d+\.\d+\.\d+$")
-DIST_TAG = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
 NOT_FROM_NPM = (
     "git+",
     "git:",
@@ -264,6 +294,11 @@ PY_RELEASE = re.compile(r"^\d+(\.\d+)*$")
 NOT_FROM_PYPI = ("git+", "hg+", "svn+", "bzr+", "file:", ".", "/", "~", "\\")
 ARCHIVES = (".whl", ".tar.gz", ".tgz", ".zip", ".tar.bz2", ".tar.xz", ".egg", ".tar")
 OSV_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$")
+# Versions from a registry are shown to Claude only in this short, plain form, so a
+# package author cannot write a message to Claude inside a version string.
+SHOWN_VERSION = re.compile(r"^\d+(\.\d+){0,3}([-+.]?[a-z]{0,10}\.?\d{0,6})?$")
+# PEP 723 inline script metadata, as in `# /// script`.
+SCRIPT_METADATA = re.compile(r"(?m)^# /// script$\s(?P<content>(^#(| .*)$\s)+)^# ///$")
 
 
 class ParseError(Exception):
@@ -555,26 +590,20 @@ def split_words(text: str) -> list[str]:
 
 @dataclass(frozen=True)
 class Request:
-    """One package that a command would install."""
+    """One package at one exact version that a command would install."""
 
     ecosystem: str
     name: str
-    version: str | None  # None means the latest release
+    version: str
 
-    def label(self, version: str | None = None) -> str:
-        shown = version or self.version
-        if not shown:
-            return f"{self.ecosystem} {self.name}"
+    def label(self) -> str:
         separator = "==" if self.ecosystem == PYPI else "@"
-        return f"{self.ecosystem} {self.name}{separator}{shown}"
+        return f"{self.ecosystem} {self.name}{separator}{self.version}"
 
-    def url(self, version: str | None = None) -> str:
-        shown = version or self.version
+    def url(self) -> str:
         if self.ecosystem == PYPI:
-            base = f"https://pypi.org/project/{self.name}/"
-            return f"{base}{shown}/" if shown else base
-        base = f"https://www.npmjs.com/package/{self.name}"
-        return f"{base}/v/{shown}" if shown else base
+            return f"https://pypi.org/project/{self.name}/{self.version}/"
+        return f"https://www.npmjs.com/package/{self.name}/v/{self.version}"
 
 
 @dataclass
@@ -584,6 +613,7 @@ class Plan:
     requests: list[Request] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
     downloads: set[str] = field(default_factory=set)  # names of files it downloads
+    cwd: str = "."  # the directory the command runs in, for reading script files
 
 
 @dataclass
@@ -595,6 +625,9 @@ class Command:
     def inputs(self) -> list[str]:
         """What arrives on stdin through < and <<< (here-documents are separate)."""
         return [target for op, target in self.redirects if op in ("<", "<<<", "<>")]
+
+    def here_strings(self) -> list[str]:
+        return [target for op, target in self.redirects if op == "<<<"]
 
 
 def pipelines(tokens: list[Token]) -> list[list[Command]]:
@@ -627,6 +660,11 @@ def pipelines(tokens: list[Token]) -> list[list[Command]]:
     return [p for p in cleaned if p]
 
 
+def program_name(word: str) -> str:
+    match = LOOKED_UP_PROGRAM.match(word)
+    return os.path.basename(match.group(1) if match else word)
+
+
 def strip_wrappers(argv: list[str]) -> list[str]:
     """Drop VAR=value, sudo, env, timeout and similar prefixes before the real program."""
     i = 0
@@ -639,6 +677,7 @@ def strip_wrappers(argv: list[str]) -> list[str]:
         if name not in WRAPPERS:
             break
         value_flags = WRAPPER_VALUE_FLAGS.get(name, frozenset())
+        flags: set[str] = set()
         i += 1
         while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
             flag, eq, inline = argv[i].partition("=")
@@ -648,7 +687,10 @@ def strip_wrappers(argv: list[str]) -> list[str]:
             if name == "env" and flag in ("-S", "--split-string"):
                 value = inline if eq else (argv[i + 1] if i + 1 < len(argv) else "")
                 return strip_wrappers(split_words(value) + argv[i + (1 if eq else 2) :])
+            flags.add(flag)
             i += 2 if flag in value_flags and not eq else 1
+        if name == "command" and flags & {"-v", "-V"}:
+            return []  # `command -v pnpm` only looks the program up
         while name == "env" and i < len(argv) and "=" in argv[i]:
             i += 1  # env takes NAME=value pairs before the command
         if name == "timeout" and i < len(argv):
@@ -656,50 +698,43 @@ def strip_wrappers(argv: list[str]) -> list[str]:
     return argv[i:]
 
 
-def program_of(argv: list[str]) -> tuple[str, list[str]]:
-    stripped = strip_wrappers(argv)
-    if not stripped:
-        return "", []
-    return os.path.basename(stripped[0]), stripped[1:]
+@dataclass
+class PythonCall:
+    module: str | None = None  # python -m module
+    code: str | None = None  # python -c code
+    script: str | None = None  # python script.py, or "-" for stdin
+    rest: list[str] = field(default_factory=list)  # the arguments after it
 
 
-def python_options(args: list[str]) -> tuple[str | None, str | None, bool]:
-    """Read python's options. Return (module after -m, script path, has -c)."""
+def read_python_args(args: list[str]) -> PythonCall:
     i = 0
     while i < len(args):
         arg = args[i]
         if not arg.startswith("-") or arg == "-":
-            return None, arg, False
+            return PythonCall(script=arg, rest=args[i + 1 :])
         if arg == "--":
-            return None, (args[i + 1] if i + 1 < len(args) else None), False
+            following = args[i + 1 : i + 2]
+            return PythonCall(
+                script=following[0] if following else None, rest=args[i + 2 :]
+            )
         if arg.startswith("--"):
             i += 1
             continue
         letters = arg[1:]
         for k, letter in enumerate(letters):
-            rest = letters[k + 1 :]
-            if letter == "c":
-                return None, None, True
-            if letter == "m":
-                module = rest or (args[i + 1] if i + 1 < len(args) else None)
-                return module, None, False
+            attached = letters[k + 1 :]
+            if letter in "cm":
+                value = attached or (args[i + 1] if i + 1 < len(args) else "")
+                rest = args[i + 1 :] if attached else args[i + 2 :]
+                if letter == "c":
+                    return PythonCall(code=value, rest=rest)
+                return PythonCall(module=value, rest=rest)
             if letter in "XW":  # options that take a value
-                i += 1 if rest else 2
+                i += 1 if attached else 2
                 break
         else:
             i += 1
-    return None, None, False
-
-
-def python_module(args: list[str]) -> tuple[str, list[str]] | None:
-    """For `python -m pip install x`, return ("pip", ["install", "x"])."""
-    module, _, _ = python_options(args)
-    if module is None:
-        return None
-    for i, arg in enumerate(args):
-        if arg == module or arg.endswith(f"m{module}"):
-            return module, args[i + 1 :]
-    return None
+    return PythonCall()  # no script: python reads its program from stdin
 
 
 def shell_options(args: list[str]) -> tuple[bool, bool, str | None]:
@@ -726,16 +761,24 @@ def shell_options(args: list[str]) -> tuple[bool, bool, str | None]:
 STDIN = (None, "-", "/dev/stdin")
 
 
+def inline_code(args: list[str]) -> list[str]:
+    """The code given to node -e, perl -e and similar."""
+    found = []
+    for i, arg in enumerate(args):
+        name, eq, value = arg.partition("=")
+        if name in INLINE_CODE_FLAGS:
+            found.append(value if eq else (args[i + 1] if i + 1 < len(args) else ""))
+    return found
+
+
 def script_of(program: str, args: list[str]) -> str | None:
     """The script file a shell or interpreter runs, if it runs one."""
     if program in SHELLS:
         has_c, _, operand = shell_options(args)
         return None if has_c else operand
     if PYTHON.match(program):
-        return python_options(args)[1]
-    if program in INTERPRETERS:
-        if any(arg.partition("=")[0] in INLINE_CODE_FLAGS for arg in args):
-            return None
+        return read_python_args(args).script
+    if program in INTERPRETERS and not inline_code(args):
         return next(
             (arg for arg in args if not arg.startswith("-") or arg == "-"), None
         )
@@ -750,12 +793,31 @@ def reads_code_from_stdin(program: str, args: list[str]) -> bool:
         has_c, has_s, operand = shell_options(args)
         return not has_c and (has_s or operand in STDIN)
     if PYTHON.match(program):
-        module, script, has_c = python_options(args)
-        return not has_c and module is None and script in STDIN
+        call = read_python_args(args)
+        return call.module is None and call.code is None and call.script in STDIN
     if program in INTERPRETERS:
-        inline = any(arg.partition("=")[0] in INLINE_CODE_FLAGS for arg in args)
-        return not inline and script_of(program, args) in STDIN
-    return False
+        return not inline_code(args) and script_of(program, args) in STDIN
+    return program in ("source", ".") and script_of(program, args) in STDIN
+
+
+def code_texts(program: str, args: list[str], command: Command) -> list[str]:
+    """The text a program runs as code, as opposed to data it only reads."""
+    texts: list[str] = []
+    if program in SHELLS:
+        operand = shell_options(args)[2]
+        texts += [operand] if operand else []
+    elif program == "eval":
+        texts += args
+    elif PYTHON.match(program):
+        call = read_python_args(args)
+        texts += [t for t in (call.code, call.script) if t]
+    elif program in INTERPRETERS:
+        texts += inline_code(args) or [t for t in [script_of(program, args)] if t]
+    elif program in ("source", "."):
+        texts += args[:1]
+    if reads_code_from_stdin(program, args):
+        texts += command.inputs()
+    return texts
 
 
 def downloaded_files(program: str, args: list[str], command: Command) -> set[str]:
@@ -818,13 +880,13 @@ def watch_command(args: list[str]) -> list[str]:
 
 def starts_nested_command(argv: list[str], j: int) -> bool:
     """True when argv[j] starts a command that runs inside another program."""
-    name = os.path.basename(argv[j])
+    name = program_name(argv[j])
     base = name.partition("@")[0]  # corepack runs pnpm@10.0.0
-    if base in INSTALL_TOOLS or PIP.match(base) or name in SHELLS:
+    if base in PACKAGE_MANAGERS or PIP.match(base) or name in SHELLS:
         return True
     if PYTHON.match(name):
-        module = python_module(argv[j + 1 :])
-        return module is not None and module[0] in ("pip", "pipx", "uv")
+        module = read_python_args(argv[j + 1 :]).module
+        return module in ("pip", "pipx", "uv")
     return False
 
 
@@ -927,11 +989,17 @@ def read_args(
         takes_value = (
             (name in value_flags or name in file_flags) and not eq and not attached
         )
-        values.setdefault(name, []).append(
-            args[i + 1] if takes_value and i + 1 < len(args) else inline
-        )
+        value = args[i + 1] if takes_value and i + 1 < len(args) else inline
+        values.setdefault(name, []).append(value)
         i += 2 if takes_value else 1
     return operands, values, maybes
+
+
+def pin_problem(spec: str, example: str) -> str:
+    return (
+        f"`{spec}` is not an exact version. Pin one, as in `{example}`, so the check vets "
+        "the exact version that gets installed."
+    )
 
 
 def parse_pypi_spec(spec: str, plan: Plan, at_version: bool = False) -> None:
@@ -940,7 +1008,7 @@ def parse_pypi_spec(spec: str, plan: Plan, at_version: bool = False) -> None:
         return
     if at_version and "@" in text and "://" not in text and not re.search(r"\s@", text):
         base, _, pin = text.partition("@")  # uvx ruff@0.14.0
-        text = base if pin in ("", "latest") else f"{base}=={pin}"
+        text = f"{base}=={pin}" if pin else base
     if (
         "://" in text
         or text.startswith(NOT_FROM_PYPI)
@@ -958,18 +1026,13 @@ def parse_pypi_spec(spec: str, plan: Plan, at_version: bool = False) -> None:
         return
     name, _extras, rest = match.groups()
     rest = rest.split(";", 1)[0].strip()  # drop an environment marker
-    version: str | None = None
-    if rest.startswith("===") and rest[3:].strip():
+    version = ""
+    if rest.startswith("==="):
         version = rest[3:].strip()
-    elif rest.startswith("==") and rest[2:].strip():
+    elif rest.startswith("=="):
         version = rest[2:].strip()
-    elif rest:
-        version = ""
-    if version == "" or (version is not None and not PY_VERSION.match(version)):
-        plan.problems.append(
-            f"`{spec}` is not an exact version. Pin one with `name==X.Y.Z`, or use the "
-            "bare name, so the check vets the exact version that gets installed."
-        )
+    if not PY_VERSION.match(version):
+        plan.problems.append(pin_problem(spec, f"{name}==1.2.3"))
         return
     normalized = re.sub(r"[-_.]+", "-", name).lower()
     plan.requests.append(Request(PYPI, normalized, version))
@@ -988,20 +1051,15 @@ def parse_npm_spec(spec: str, plan: Plan) -> None:
         return
     if text.startswith("@"):
         at = text.find("@", 1)
-        name, version = (
-            (text, None) if at == -1 else (text[:at], text[at + 1 :] or None)
-        )
+        name, version = (text, "") if at == -1 else (text[:at], text[at + 1 :])
     else:
-        name, _, rest = text.partition("@")
-        version = rest or None
-    if version and version.startswith("npm:"):
+        name, _, version = text.partition("@")
+    if version.startswith("npm:"):
         parse_npm_spec(version[4:], plan)  # an alias, as in my-zod@npm:zod@4.1.12
         return
-    if version and version.startswith("workspace:"):
+    if version.startswith("workspace:"):
         return  # a package from this repository, not from the registry
-    if version and (
-        version.startswith(NOT_FROM_NPM) or "/" in version or ":" in version
-    ):
+    if version.startswith(NOT_FROM_NPM) or "/" in version or ":" in version:
         plan.problems.append(f"`{spec}` is not a package from the npm registry.")
         return
     if len(name) > 214 or not NPM_NAME.match(name):
@@ -1012,15 +1070,9 @@ def parse_npm_spec(spec: str, plan: Plan) -> None:
             else f"`{spec}` is not a valid npm package name."
         )
         return
-    if version == "latest":
-        version = None
-    elif version and EXACT_SEMVER.match(version.removeprefix("v")):
-        version = version.removeprefix("v")
-    elif version and not DIST_TAG.match(version):
-        plan.problems.append(
-            f"`{spec}` is not an exact version. Pin one with `name@X.Y.Z`, or use the bare "
-            "name, so the check vets the exact version that gets installed."
-        )
+    version = version.removeprefix("v")
+    if not EXACT_SEMVER.match(version):
+        plan.problems.append(pin_problem(spec, f"{name}@1.2.3"))
         return
     plan.requests.append(Request(NPM, name, version))
 
@@ -1049,15 +1101,123 @@ def blocked_tool(plan: Plan, tool: str, alternative: str) -> None:
 
 def check_config_change(tool: str, verb: str, tail: list[str], plan: Plan) -> None:
     """`npm config set registry ...` would point later installs at another registry."""
-    keys = tail[1:2] if verb in ("config", "c") and tail[:1] == ["set"] else []
-    keys += tail[:1] if verb == "set" else []
+    if verb in ("config", "c") and tail[:1] == ["set"]:
+        keys = tail[1:]
+    elif verb == "set":
+        keys = tail
+    else:
+        return
     for key in keys:
-        if RISKY_SETTING.search(key.partition("=")[0]):
+        name = key.partition("=")[0]
+        if not key.startswith("-") and RISKY_SETTING.search(name):
             plan.problems.append(
-                f"`{tool} {verb}` would change `{key.partition('=')[0]}`, which decides "
-                "where packages come from or whether certificates are checked. Leave it "
-                "as it is."
+                f"`{tool} {verb}` would change `{name}`, which decides where packages come "
+                "from or whether certificates are checked. Leave it as it is."
             )
+
+
+def inline_script_requests(path: str, plan: Plan) -> None:
+    """`uv run script.py` installs the packages listed in the script's own header."""
+    try:
+        with open(os.path.join(plan.cwd, path), "rb") as handle:
+            text = handle.read(MAX_SCRIPT_BYTES + 1).decode("utf-8", "replace")
+    except OSError:
+        return  # no such file yet, so uv will fail too
+    match = SCRIPT_METADATA.search(text)
+    if match is None:
+        return
+    content = "".join(
+        line[2:] if line.startswith("# ") else line[1:]
+        for line in match.group("content").splitlines(keepends=True)
+    )
+    try:
+        import tomllib  # imported here because it needs Python 3.11 or later
+
+        metadata = tomllib.loads(content)
+    except (ImportError, ValueError):
+        plan.problems.append(
+            f"The check could not read the dependencies listed in {path}, so it cannot "
+            "vet them."
+        )
+        return
+    if RISKY_SETTING.search(json.dumps(metadata.get("tool", {}))):
+        plan.problems.append(
+            f"{path} sets its own index or package source, so the check cannot vet its "
+            "dependencies."
+        )
+    for spec in as_list(metadata.get("dependencies")):
+        if isinstance(spec, str):
+            parse_pypi_spec(spec, plan)
+
+
+def uv_run_command(
+    args: list[str], plan: Plan | None = None
+) -> tuple[list[str], dict[str, list[str]], str | None]:
+    """What `uv run` starts: the command, the options, and the script file if any.
+
+    `uv run x.py` runs the script with Python and installs the dependencies its
+    header lists; `uv run python x.py` runs Python and reads no header.
+    """
+    operands, options, _ = read_args(
+        args,
+        UV_RUN_VALUE_FLAGS,
+        UV_RUN_BOOL_FLAGS,
+        UV_FILE_FLAGS,
+        plan or Plan(),
+        "uv run",
+        stop_at_operand=True,
+    )
+    if "-m" in options or "--module" in options:
+        return ["python", "-m", *operands], options, None
+    as_script = {"-s", "--script"} & set(options)
+    if operands and (operands[0].endswith((".py", ".pyw")) or as_script):
+        return ["python", *operands], options, operands[0]
+    return operands, options, None
+
+
+def inner_command(program: str, args: list[str]) -> list[str] | None:
+    """The command that `uv run`, `pnpm exec` or corepack starts."""
+    tool = program_name(args[0]).partition("@")[0] if args else ""
+    if program == "corepack" and tool in COREPACK_TOOLS:
+        return args  # `corepack pnpm@10.0.0 add x` runs pnpm 10.0.0
+    if program == "uv":
+        index = find_verb(args, UV_SUBCOMMANDS, UV_VALUE_FLAGS, UV_BOOL_FLAGS)
+        if index is not None and args[index] == "run":
+            return uv_run_command(args[index + 1 :])[0] or None
+    if program == "pnpm":
+        index = find_verb(args, PNPM_VERBS, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS)
+        shell_mode = any(a in ("-c", "--shell-mode") for a in args[: index or 0])
+        while index is not None and args[index] in ("recursive", "multi", "m"):
+            args = args[index + 1 :]
+            index = find_verb(args, PNPM_VERBS, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS)
+        if index is not None and args[index] == "exec":
+            operands, options, _ = read_args(
+                args[index + 1 :],
+                PNPM_VALUE_FLAGS,
+                PNPM_BOOL_FLAGS,
+                frozenset(),
+                Plan(),
+                "pnpm exec",
+                stop_at_operand=True,
+            )
+            if shell_mode or "-c" in options or "--shell-mode" in options:
+                return ["sh", "-c", operands[0]] if operands else None
+            return operands or None
+    return None
+
+
+def program_of(argv: list[str]) -> tuple[str, list[str]]:
+    """The program that really runs, past wrappers, `uv run` and `pnpm exec`."""
+    stripped = strip_wrappers(argv)
+    for _ in range(MAX_NESTING):
+        if not stripped:
+            return "", []
+        program, args = program_name(stripped[0]), stripped[1:]
+        inner = inner_command(program, args)
+        if not inner:
+            return program, args
+        stripped = strip_wrappers(inner)
+    return "", []
 
 
 def plan_uv(args: list[str], plan: Plan) -> None:
@@ -1070,18 +1230,12 @@ def plan_uv(args: list[str], plan: Plan) -> None:
         return
     sub, tail = args[index], args[index + 1 :]
     if sub == "run":
-        _, more, _ = read_args(
-            tail,
-            UV_RUN_VALUE_FLAGS,
-            UV_BOOL_FLAGS,
-            UV_FILE_FLAGS,
-            plan,
-            "uv run",
-            stop_at_operand=True,
-        )
+        _, more, script = uv_run_command(tail, plan)
         for spec in more.get("--with", []):
             for item in spec.split(","):
                 parse_pypi_spec(item, plan, at_version=True)
+        if script:
+            inline_script_requests(script, plan)
     elif sub == "tool" and tail[:1] in (["run"], ["install"]):
         more = plan_tool_run(tail[1:], plan, f"uv tool {tail[0]}")
     else:
@@ -1095,10 +1249,15 @@ def plan_uv(args: list[str], plan: Plan) -> None:
             plan.problems.append(
                 f"`uv pip {operands[0]}` works outside pyproject.toml and uv.lock, so the "
                 "check cannot vet it. Use `uv add <name>==<version>`, or `uv sync` to "
-                "install the reviewed lockfile."
+                "install the lockfile."
             )
         elif sub == "tool" and operands[:1] == ["upgrade"]:
             plan.problems.append(f"`uv tool upgrade` {BULK_UPGRADE}")
+        elif sub == "self" and operands[:1] == ["update"]:
+            plan.problems.append(
+                "`uv self update` replaces uv without the check. Leave uv at the version "
+                "the environment provides."
+            )
         elif sub == "venv" and "--seed" in more:
             plan.problems.append(
                 "`uv venv --seed` installs pip and setuptools without the check, and uv "
@@ -1137,9 +1296,8 @@ def plan_pnpm(args: list[str], plan: Plan, depth: int) -> None:
         head, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS, frozenset(), plan, "pnpm"
     )
     while index is not None and args[index] in ("recursive", "multi", "m"):
-        rest = args[index + 1 :]
-        found = find_verb(rest, PNPM_VERBS, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS)
-        index, args = (None, rest) if found is None else (found, rest)
+        args = args[index + 1 :]
+        index = find_verb(args, PNPM_VERBS, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS)
     if index is None:
         return
     verb, tail = args[index], args[index + 1 :]
@@ -1194,32 +1352,91 @@ def plan_npm(args: list[str], plan: Plan) -> None:
 
 def plan_corepack(args: list[str], plan: Plan) -> None:
     """corepack downloads the package manager version a command names."""
-    if args[:1] and args[0] in ("use", "up", "install", "prepare", "pack", "hydrate"):
+    verb = args[0] if args else ""
+    if verb == "up":
+        plan.problems.append(f"`corepack up` {BULK_UPGRADE}")
+    elif verb in ("use", "install", "prepare", "pack", "hydrate"):
         for arg in args[1:]:
-            if re.match(r"^(pnpm|yarn|npm)@", arg):
+            if re.match(r"^(pnpm|yarn|npm)(@|$)", arg):
                 parse_npm_spec(arg, plan)
 
 
+def plan_xargs(args: list[str], plan: Plan, depth: int) -> None:
+    """Check what xargs runs, with a stand-in for the words it reads from stdin."""
+    i, replace = 0, None
+    while i < len(args) and args[i].startswith("-"):
+        arg = args[i]
+        if arg in ("-I", "--replace"):
+            replace = args[i + 1] if i + 1 < len(args) else "{}"
+            i += 2
+            continue
+        if arg.startswith(("-I", "-i", "--replace=")):
+            replace = arg.partition("=")[2] if "=" in arg else (arg[2:] or "{}")
+        i += 2 if arg in XARGS_VALUE_FLAGS else 1
+    command = args[i:]
+    if not command:
+        return
+    if replace:
+        probe = [word.replace(replace, XARGS_INPUT) for word in command]
+    else:
+        probe = [*command, XARGS_INPUT]
+    trial = Plan(downloads=set(plan.downloads), cwd=plan.cwd)
+    plan_simple_command(Command(probe), trial, depth + 1)
+    from_stdin = any(XARGS_INPUT in r.name for r in trial.requests) or any(
+        XARGS_INPUT in p for p in trial.problems
+    )
+    if from_stdin:
+        plan.problems.append(
+            "Packages passed through `xargs` cannot be checked. Name each package in "
+            "the command."
+        )
+    plan.requests += [r for r in trial.requests if XARGS_INPUT not in r.name]
+    plan.problems += [p for p in trial.problems if XARGS_INPUT not in p]
+
+
+def plan_git(args: list[str], plan: Plan, depth: int) -> None:
+    """git runs commands for `bisect run`, `rebase --exec` and `submodule foreach`."""
+    for i, arg in enumerate(args):
+        following = args[i + 1 :]
+        if arg in ("--exec", "-x") and following:
+            plan_script(following[0], plan, depth + 1)
+        elif arg.startswith("--exec="):
+            plan_script(arg.partition("=")[2], plan, depth + 1)
+        elif arg == "foreach" and following:
+            plan_script(
+                " ".join(f for f in following if not f.startswith("-")), plan, depth + 1
+            )
+        elif arg == "run" and "bisect" in args[:i] and following:
+            plan_simple_command(Command(following), plan, depth + 1)
+
+
 def plan_script(text: str, plan: Plan, depth: int) -> None:
-    """Text that a shell runs as code, including here-documents it builds on the way."""
+    """Text that a shell runs as code.
+
+    In `bash -c "$(cat <<'EOF' ... EOF)"` the script is a here-document inside a
+    command substitution, so those here-documents are code too. A here-document at
+    the top of the text is data for its command, as in a file written with cat.
+    """
     plan_command(text, plan, depth)
     try:
         lexer = lex(text)
     except ParseError:
         return
-    for tokens in [lexer.tokens, *lexer.nested]:
-        for token in tokens:
-            if token.kind == "heredoc":
-                plan_command(token.value, plan, depth)
+    if len(lexer.tokens) == 1 and lexer.tokens[0].kind == "word":
+        for tokens in lexer.nested:
+            for token in tokens:
+                if token.kind == "heredoc":
+                    plan_command(token.value, plan, depth)
 
 
 def plan_program(
     program: str, args: list[str], command: Command, plan: Plan, depth: int
 ) -> None:
     """Apply the install rules to one program and its arguments."""
-    base, at_sign, _ = program.partition("@")
-    if at_sign and base in ("pnpm", "yarn", "npm"):
-        parse_npm_spec(program, plan)  # corepack downloads this version first
+    base, at_sign, version = program.partition("@")
+    if at_sign and base in COREPACK_TOOLS:
+        # corepack downloads this version of the package manager first
+        parse_npm_spec(f"{COREPACK_TOOLS[base]}@{version}", plan)
         program = base
     script = script_of(program, args)
     if program in plan.downloads or (
@@ -1230,14 +1447,9 @@ def plan_program(
             "nothing checks what it runs. Download the file, read it, then decide "
             "whether to run it."
         )
-    runs_code = (
-        program in SHELLS
-        or program in INTERPRETERS
-        or program in ("eval", "source", ".")
-        or PYTHON.match(program)
-    )
-    if runs_code and any(
-        DOWNLOAD_SUBSTITUTION.search(text) for text in args + command.inputs()
+    if any(
+        DOWNLOAD_SUBSTITUTION.search(text)
+        for text in code_texts(program, args, command)
     ):
         plan.problems.append(
             "Running a downloaded script is blocked, because nothing checks what it runs. "
@@ -1250,8 +1462,7 @@ def plan_program(
         if has_c and operand is not None:
             plan_script(operand, plan, depth + 1)
         elif has_s or operand in STDIN:  # bash <<'EOF' runs the here-document
-            here_strings = [t for op, t in command.redirects if op == "<<<"]
-            for text in command.heredocs + here_strings:
+            for text in command.heredocs + command.here_strings():
                 plan_script(text, plan, depth + 1)
     elif program == "eval":
         plan_script(" ".join(args), plan, depth + 1)
@@ -1262,15 +1473,18 @@ def plan_program(
     elif program == "watch":
         plan_command(" ".join(watch_command(args)), plan, depth + 1)
     elif program == "xargs":
-        if any(starts_nested_command(args, j) for j in range(len(args))):
-            plan.problems.append(
-                "Packages passed through `xargs` cannot be checked. Name each package in "
-                "the command."
-            )
+        plan_xargs(args, plan, depth)
+    elif program == "git":
+        plan_git(args, plan, depth)
     elif PYTHON.match(program):
-        module = python_module(args)
-        if module is not None:
-            plan_program(module[0], module[1], Command(), plan, depth + 1)
+        call = read_python_args(args)
+        if call.module == "venv" and "--upgrade-deps" in call.rest:
+            plan.problems.append(
+                "`python -m venv --upgrade-deps` installs the newest pip and setuptools "
+                "without the check. Leave out --upgrade-deps."
+            )
+        elif call.module:
+            plan_program(call.module, call.rest, Command(), plan, depth + 1)
     elif program == "uv":
         plan_uv(args, plan)
     elif program == "uvx":
@@ -1296,6 +1510,21 @@ def plan_program(
         blocked_tool(plan, program, JS_WAY)
 
 
+def runs_other_commands(program: str) -> bool:
+    """Programs not handled above whose arguments may hold a command to run, such as
+    `docker exec web sh -c "..."` or `find . -exec ...`."""
+    return not (
+        program in NO_COMMAND_ARGS
+        or program in PACKAGE_MANAGERS
+        or program in SHELLS
+        or program in INTERPRETERS
+        or program in COMMAND_STRING_RUNNERS
+        or program in ("eval", "source", ".", "watch", "xargs", "git")
+        or PYTHON.match(program)
+        or PIP.match(program)
+    )
+
+
 def plan_simple_command(command: Command, plan: Plan, depth: int) -> None:
     argv = command.argv
     for word in argv:
@@ -1306,19 +1535,29 @@ def plan_simple_command(command: Command, plan: Plan, depth: int) -> None:
                 "checked, so the check cannot vet installs that use it. Remove it."
             )
     stripped = strip_wrappers(argv)
-    program = os.path.basename(stripped[0]) if stripped else ""
-    if program:
-        plan_program(program, stripped[1:], command, plan, depth)
-    # A later word that starts a command, as in `watch -n 5 pnpm add zod`,
-    # `docker exec web sh -c "pnpm add zod"` or `uv run pip install x`, is checked too.
-    k = len(argv) - len(stripped)
-    for j in range(1, len(argv)):
-        if j == k or (program == "uv" and j == k + 1 and argv[j] == "pip"):
-            continue
-        if starts_nested_command(argv, j):
-            if depth < MAX_NESTING:
+    if not stripped:
+        return
+    program, args = program_name(stripped[0]), stripped[1:]
+    if program == "cd":
+        target = args[0] if args else ""
+        if target and target not in ("-", "~") and not target.startswith("~"):
+            plan.cwd = os.path.join(plan.cwd, target)
+        return
+    plan_program(program, args, command, plan, depth)
+    if depth >= MAX_NESTING:
+        return
+    base = program.partition("@")[0]  # corepack runs pnpm@10.0.0 as pnpm
+    inner = inner_command(base, args)
+    if inner:  # `uv run python x.py` and `pnpm exec node x.js` run another program
+        plan_simple_command(
+            Command(inner, command.heredocs, command.redirects), plan, depth + 1
+        )
+    elif runs_other_commands(base):
+        k = len(argv) - len(stripped)
+        for j in range(1, len(argv)):  # from 1, in case a wrapper option was misread
+            if j != k and starts_nested_command(argv, j):
                 plan_simple_command(Command(argv[j:]), plan, depth + 1)
-            break
+                break
 
 
 def plan_tokens(tokens: list[Token], plan: Plan, depth: int) -> None:
@@ -1340,13 +1579,14 @@ def plan_tokens(tokens: list[Token], plan: Plan, depth: int) -> None:
 
 
 def plan_fed_text(command: Command, plan: Plan, depth: int) -> None:
-    for text in command.heredocs + [t for op, t in command.redirects if op == "<<<"]:
+    for text in command.heredocs + command.here_strings():
         plan_script(text, plan, depth)
     program, args = program_of(command.argv)
     if program in ("echo", "printf"):
-        plan_command(
-            " ".join(arg for arg in args if not arg.startswith("-")), plan, depth
-        )
+        text = " ".join(arg for arg in args if not arg.startswith("-"))
+        if program == "printf" or "-e" in args:
+            text = text.replace("\\n", "\n").replace("\\t", "\t")
+        plan_command(text, plan, depth)
 
 
 def plan_command(text: str, plan: Plan, depth: int = 0) -> None:
@@ -1379,22 +1619,25 @@ def as_list(value: Any) -> list[Any]:
 
 
 class Registry:
-    """Reads PyPI, npm and OSV. Every request has a timeout and respects the deadline."""
+    """Reads PyPI, npm, OSV and the approvals file. Every request has a timeout and
+    respects the deadline."""
 
     pypi_url = "https://pypi.org"
     npm_url = "https://registry.npmjs.org"
     osv_url = "https://api.osv.dev"
+    approvals_url = APPROVALS_URL
 
     def __init__(self, deadline: float) -> None:
         self.deadline = deadline  # a time.monotonic() value
 
-    def get_json(
+    def get(
         self,
         url: str,
         body: dict[str, Any] | None = None,
         accept: str = "application/json",
-    ) -> Any:
-        """Return parsed JSON, or None for HTTP 404. Retries once after a transient error."""
+    ) -> bytes | None:
+        """Return the response body, or None for HTTP 404. Retries once after a
+        transient error."""
         host = urllib.parse.urlsplit(url).hostname or url
         error: CheckError = Unreachable(f"could not reach {host}")
         for attempt in range(HTTP_ATTEMPTS):
@@ -1426,7 +1669,7 @@ class Registry:
         accept: str,
         timeout: float,
         host: str,
-    ) -> Any:
+    ) -> bytes:
         data = json.dumps(body).encode() if body is not None else None
         headers = {
             "User-Agent": USER_AGENT,
@@ -1439,7 +1682,9 @@ class Registry:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             chunks: list[bytes] = []
             size = 0
-            while chunk := response.read(64 * 1024):
+            # read1 returns whatever has arrived, so the deadline is checked between
+            # reads even when a server sends its answer very slowly.
+            while chunk := response.read1(64 * 1024):
                 size += len(chunk)
                 if size > MAX_DOWNLOAD_BYTES or time.monotonic() > self.deadline:
                     raise CheckError(
@@ -1449,9 +1694,21 @@ class Registry:
             raw = b"".join(chunks)
             if (response.headers.get("Content-Encoding") or "").lower() == "gzip":
                 raw = gunzip(raw, host)
+        return raw
+
+    def get_json(
+        self,
+        url: str,
+        body: dict[str, Any] | None = None,
+        accept: str = "application/json",
+    ) -> Any:
+        raw = self.get(url, body, accept)
+        if raw is None:
+            return None
         try:
             return json.loads(raw)
         except ValueError as error:
+            host = urllib.parse.urlsplit(url).hostname
             raise CheckError(
                 f"{host} sent a response the check could not read"
             ) from error
@@ -1496,6 +1753,14 @@ class Registry:
             body["page_token"] = token
         raise CheckError("api.osv.dev returned too many pages")
 
+    def approvals(self) -> set[str]:
+        """The approvals on main. If they cannot be read, there are none."""
+        try:
+            raw = self.get(self.approvals_url, accept="text/plain")
+        except CheckError:
+            return set()
+        return parse_approvals(raw.decode("utf-8", "replace")) if raw else set()
+
 
 def gunzip(raw: bytes, host: str) -> bytes:
     decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
@@ -1515,7 +1780,6 @@ def gunzip(raw: bytes, host: str) -> bytes:
 class Finding:
     request: Request
     problems: list[str] = field(default_factory=list)
-    version: str | None = None
     summary: str = ""
     cooldown: bool = False  # an age rule failed, so an approval could allow it
     unreachable: bool = False
@@ -1535,14 +1799,22 @@ def parse_time(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def earliest(times: Iterable[datetime | None]) -> datetime | None:
-    return min((t for t in times if t is not None), default=None)
-
-
 def age_text(delta: timedelta) -> str:
     if delta.days < 1:
         return "less than a day ago"
     return f"{delta.days} day{'s' if delta.days != 1 else ''} ago"
+
+
+def shown_version(value: Any) -> str | None:
+    """A registry's version string, if it is short and plain enough to show Claude."""
+    if isinstance(value, str) and len(value) <= 32 and SHOWN_VERSION.match(value):
+        return value
+    return None
+
+
+def release_key(version: str) -> tuple[int, ...]:
+    match = re.match(r"\d+(\.\d+)*", version)
+    return tuple(int(part) for part in match.group().split(".")) if match else ()
 
 
 def version_from_filename(filename: str) -> str | None:
@@ -1555,28 +1827,25 @@ def version_from_filename(filename: str) -> str | None:
     return None
 
 
-def newest_old_enough(
-    times: dict[str, datetime], now: datetime, pattern: re.Pattern[str], exclude: str
+def older_version(
+    times: dict[str, datetime], now: datetime, pattern: re.Pattern[str], requested: str
 ) -> str | None:
-    """The newest stable version that is past the 7 day cooldown."""
+    """The newest stable version below the requested one that is past the cooldown."""
+    ceiling = release_key(requested)
     candidates = [
         version
         for version, when in times.items()
         if pattern.match(version)
-        and version != exclude
+        and release_key(version) < ceiling
         and now - when >= MIN_VERSION_AGE
     ]
-    if not candidates:
-        return None
-    return max(
-        candidates, key=lambda v: tuple(int(part) for part in re.findall(r"\d+", v))
-    )
+    return max(candidates, key=release_key) if candidates else None
 
 
-def approval_key(request: Request, version: str) -> str:
+def approval_key(request: Request) -> str:
     if request.ecosystem == PYPI:
-        return f"pypi/{request.name}=={version}".lower()
-    return f"npm/{request.name}@{version}".lower()
+        return f"pypi/{request.name}=={request.version}".lower()
+    return f"npm/{request.name}@{request.version}".lower()
 
 
 def parse_approvals(text: str) -> set[str]:
@@ -1588,27 +1857,10 @@ def parse_approvals(text: str) -> set[str]:
     return approved
 
 
-def load_approvals(root: Path = REPO_ROOT, ref: str = APPROVALS_REF) -> set[str]:
-    """Read approvals from the reviewed main branch, never from the working tree.
-
-    Claude can edit files in its own branch, so an approval counts only after it has
-    been reviewed and merged.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "--no-pager", "-C", str(root), "show", f"{ref}:{APPROVALS_FILE}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return set()
-    return parse_approvals(result.stdout) if result.returncode == 0 else set()
-
-
-def osv_problems(registry: Registry, request: Request, version: str) -> list[str]:
-    ids = sorted(set(registry.osv_ids(request.ecosystem, request.name, version)))
+def osv_problems(registry: Registry, request: Request) -> list[str]:
+    ids = sorted(
+        set(registry.osv_ids(request.ecosystem, request.name, request.version))
+    )
     malware = [i for i in ids if i.startswith("MAL-")]
     if malware:
         return [
@@ -1622,14 +1874,14 @@ def osv_problems(registry: Registry, request: Request, version: str) -> list[str
     links = " ".join(f"https://osv.dev/vulnerability/{i}" for i in ids[:5])
     more = f" and {len(ids) - 5} more" if len(ids) > 5 else ""
     return [
-        f"Version {version} has known vulnerabilities: {links}{more}. Pick another."
+        f"Version {request.version} has known vulnerabilities: {links}{more}. Pick another."
     ]
 
 
 def age_problems(
     finding: Finding,
     first: datetime,
-    published: datetime,
+    newest: datetime,
     now: datetime,
     suggestion: Callable[[], str | None],
 ) -> None:
@@ -1639,26 +1891,27 @@ def age_problems(
             f"This package was first published {age_text(now - first)}. Packages younger "
             "than 30 days are blocked, because most malicious packages are brand new."
         )
-    if now - published < MIN_VERSION_AGE:
+    if now - newest < MIN_VERSION_AGE:
         finding.cooldown = True
         older = suggestion()
-        hint = f" {older} is past the cooldown; use it instead." if older else ""
+        hint = (
+            f" {older} is older and past the cooldown; try it, and the check will vet it."
+            if older
+            else ""
+        )
         finding.problems.append(
-            f"Version {finding.version} was published {age_text(now - published)}. "
-            f"Versions younger than 7 days are blocked while the community checks them.{hint}"
+            f"A file of version {finding.request.version} was published "
+            f"{age_text(now - newest)}. Versions with files younger than 7 days are "
+            f"blocked while the community checks them.{hint}"
         )
 
 
-def summarize(
-    finding: Finding, published: datetime, now: datetime, latest: Any
-) -> None:
-    request, version = finding.request, finding.version
-    finding.summary = (
-        f"{request.label(version)}, published {age_text(now - published)}: "
-        f"{request.url(version)}"
-    )
-    if isinstance(latest, str) and version != latest:
-        finding.summary += f" (latest release: {latest})"
+def summarize(finding: Finding, newest: datetime, now: datetime, latest: Any) -> None:
+    request = finding.request
+    finding.summary = f"{request.label()}, last file published {age_text(now - newest)}: {request.url()}"
+    shown = shown_version(latest)
+    if shown and shown != request.version:
+        finding.summary += f" (latest release: {shown})"
 
 
 def check_pypi(
@@ -1674,48 +1927,46 @@ def check_pypi(
         )
         return finding
     latest = as_dict(project.get("info")).get("version")
-    version = request.version or latest
-    if not isinstance(version, str) or not PY_VERSION.match(version):
-        raise CheckError(f"PyPI gave no usable version for {request.name}")
-    finding.version = version
-    release = (
-        project if version == latest else registry.pypi_release(request.name, version)
-    )
+    release = project if request.version == latest else None
+    release = release or registry.pypi_release(request.name, request.version)
     if release is None:
-        finding.problems.append(f"Version {version} does not exist on PyPI.")
+        finding.problems.append(f"Version {request.version} does not exist on PyPI.")
         return finding
     if as_dict(release.get("info")).get("yanked"):
-        finding.problems.append(f"Version {version} was yanked by its maintainers.")
-    published = earliest(
+        finding.problems.append(
+            f"Version {request.version} was yanked by its maintainers."
+        )
+    uploads = [
         parse_time(as_dict(item).get("upload_time_iso_8601"))
         for item in as_list(release.get("urls"))
-    )
-    if published is None:
-        finding.problems.append(f"PyPI lists no files for version {version}.")
+    ]
+    times = [t for t in uploads if t is not None]
+    if not times:
+        finding.problems.append(f"PyPI lists no files for version {request.version}.")
         return finding
-    if approval_key(request, version) not in approved:
+    newest = max(times)  # a file added to an old release is as new as its upload
+    if approval_key(request) not in approved:
         files = [as_dict(item) for item in registry.pypi_files(request.name)]
-        first = (
-            earliest(parse_time(item.get("upload-time")) for item in files) or published
-        )
+        all_times = [t for t in (parse_time(f.get("upload-time")) for f in files) if t]
+        first = min(all_times, default=min(times))
 
         def suggestion() -> str | None:
-            times: dict[str, datetime] = {}
+            per_version: dict[str, datetime] = {}
             yanked: set[str] = set()
             for item in files:
                 found = version_from_filename(str(item.get("filename", "")))
                 when = parse_time(item.get("upload-time"))
                 if found and when:
-                    times[found] = min(times.get(found, when), when)
+                    per_version[found] = max(per_version.get(found, when), when)
                     if item.get("yanked"):
                         yanked.add(found)
-            usable = {v: t for v, t in times.items() if v not in yanked}
-            older = newest_old_enough(usable, now, PY_RELEASE, version)
+            usable = {v: t for v, t in per_version.items() if v not in yanked}
+            older = older_version(usable, now, PY_RELEASE, request.version)
             return f"{request.name}=={older}" if older else None
 
-        age_problems(finding, first, published, now, suggestion)
-    finding.problems += osv_problems(registry, request, version)
-    summarize(finding, published, now, latest)
+        age_problems(finding, first, newest, now, suggestion)
+    finding.problems += osv_problems(registry, request)
+    summarize(finding, newest, now, latest)
     return finding
 
 
@@ -1732,40 +1983,30 @@ def check_npm(
             f"https://www.npmjs.com/search?q={urllib.parse.quote(request.name)}"
         )
         return finding
-    tags = as_dict(doc.get("dist-tags"))
-    wanted = request.version or "latest"
-    version = wanted if EXACT_SEMVER.match(wanted) else tags.get(wanted)
-    if not isinstance(version, str) or not EXACT_SEMVER.match(version):
-        finding.problems.append(
-            f"npm has no release tagged `{wanted}`. Pin an exact version."
-        )
-        return finding
-    finding.version = version
-    manifest = versions.get(version)
+    manifest = versions.get(request.version)
     if not isinstance(manifest, dict):
-        finding.problems.append(f"Version {version} does not exist on npm.")
+        finding.problems.append(f"Version {request.version} does not exist on npm.")
         return finding
     if manifest.get("deprecated"):
         # The deprecation text is written by the package author, so it is not repeated.
         finding.problems.append(
-            f"Version {version} is deprecated on npm. Read why on the package page, then "
-            "pick another version or package."
+            f"Version {request.version} is deprecated on npm. Read why on the package "
+            "page, then pick another version or package."
         )
     times = as_dict(doc.get("time"))
-    published = parse_time(times.get(version))
+    published = parse_time(times.get(request.version))
     if published is None:
-        raise CheckError(f"npm gave no publish date for {request.name} {version}")
-    if approval_key(request, version) not in approved:
+        raise CheckError(
+            f"npm gave no publish date for {request.name} {request.version}"
+        )
+    if approval_key(request) not in approved:
         per_version: dict[str, datetime] = {}
         for candidate in versions:
             when = parse_time(times.get(candidate))
             if when is not None:
                 per_version[candidate] = when
-        first = (
-            parse_time(times.get("created"))
-            or earliest(per_version.values())
-            or published
-        )
+        earliest = min(per_version.values(), default=published)
+        first = parse_time(times.get("created")) or earliest
 
         def suggestion() -> str | None:
             usable = {
@@ -1773,12 +2014,12 @@ def check_npm(
                 for v, t in per_version.items()
                 if not as_dict(versions.get(v)).get("deprecated")
             }
-            older = newest_old_enough(usable, now, NPM_RELEASE, version)
+            older = older_version(usable, now, NPM_RELEASE, request.version)
             return f"{request.name}@{older}" if older else None
 
         age_problems(finding, first, published, now, suggestion)
-    finding.problems += osv_problems(registry, request, version)
-    summarize(finding, published, now, tags.get("latest"))
+    finding.problems += osv_problems(registry, request)
+    summarize(finding, published, now, as_dict(doc.get("dist-tags")).get("latest"))
     return finding
 
 
@@ -1795,8 +2036,9 @@ def evaluate(
     now: datetime,
     approvals: set[str] | None = None,
     cloud: bool = False,
+    cwd: str = ".",
 ) -> Outcome:
-    plan = Plan()
+    plan = Plan(cwd=cwd)
     try:
         plan_command(command, plan)
     except Exception as error:  # noqa: BLE001 - a reader bug must not stop ordinary commands
@@ -1815,7 +2057,7 @@ def evaluate(
         )
     findings: list[Finding] = []
     if not problems:
-        approved = load_approvals() if approvals is None else approvals
+        approved = registry.approvals() if approvals is None else approvals
 
         def check(request: Request) -> Finding:
             checker = check_pypi if request.ecosystem == PYPI else check_npm
@@ -1841,22 +2083,20 @@ def block_message(problems: list[str], blocked: list[Finding], cloud: bool) -> s
     ]
     lines += [f"- {problem}" for problem in problems]
     for finding in blocked:
-        request, version = finding.request, finding.version
-        where = f"{request.label(version)} ({request.url(version)})"
+        request = finding.request
+        where = f"{request.label()} ({request.url()})"
         lines += [f"- {where}: {problem}" for problem in finding.problems]
     lines.append(
         "Do not work around this check. Tell Aisha what was blocked and why, with the "
         "links above."
     )
-    cooled = [
-        approval_key(f.request, f.version) for f in blocked if f.cooldown and f.version
-    ]
+    cooled = [approval_key(f.request) for f in blocked if f.cooldown]
     if cooled:
         lines.append(
             "If Aisha decides a version is safe to use before the cooldown ends, she adds "
             f"`{cooled[0]}` to .claude/approved-packages.txt in a pull request. The check "
-            f"reads approvals from {APPROVALS_REF}, so an approval counts only after review "
-            "and merge; then run `git fetch origin main`."
+            "reads approvals from main on GitHub, so an approval counts only after review "
+            "and merge, and can take a few minutes to show."
         )
     if any(finding.unreachable for finding in blocked):
         hint = (
@@ -1884,9 +2124,9 @@ def start_watchdog(seconds: float, on_timeout: Callable[[], None]) -> threading.
 
 def give_up() -> None:
     sys.stderr.write(
-        f"The package check ran out of time ({DEADLINE_SECONDS:.0f} seconds) while "
-        "contacting PyPI, npm or OSV, so it blocked the command to be safe. Try again. If "
-        "it keeps happening, check that those sites are reachable.\n"
+        f"The package check ran out of time ({DEADLINE_SECONDS:.0f} seconds), so it "
+        "blocked the command to be safe. A registry may be slow, or the command may be "
+        "too long to read. Try again, or split the command into smaller ones.\n"
     )
     sys.stderr.flush()
     os._exit(2)
@@ -1899,16 +2139,23 @@ def main() -> int:
         payload = json.loads(sys.stdin.buffer.read())
         if not isinstance(payload, dict):
             raise TypeError("the hook input is not a JSON object")
-        if payload.get("tool_name") != "Bash":
+        if payload.get("tool_name") not in SHELL_TOOLS:
             return 0
-        tool_input = payload.get("tool_input")
-        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        tool_input = as_dict(payload.get("tool_input"))
+        command = tool_input.get("command")
+        if (
+            command is None
+            and payload.get("tool_name") == "Monitor"
+            and "ws" in tool_input
+        ):
+            return 0  # a WebSocket monitor runs no shell command
         if not isinstance(command, str):
             raise TypeError("the hook input has no command")
+        given = payload.get("cwd")
+        cwd = given if isinstance(given, str) else "."
         cloud = os.environ.get("CLAUDE_CODE_REMOTE") == "true"
-        outcome = evaluate(
-            command, Registry(deadline), datetime.now(timezone.utc), cloud=cloud
-        )
+        now = datetime.now(timezone.utc)
+        outcome = evaluate(command, Registry(deadline), now, cloud=cloud, cwd=cwd)
     except Exception as error:  # noqa: BLE001 - any failure must block, never allow
         outcome = Outcome(
             2,

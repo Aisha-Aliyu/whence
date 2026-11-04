@@ -18,7 +18,7 @@ These folders do not exist yet. Each arrives in its own pull request, so do not 
 ## Commands
 
 - Package check tests: `python3 -m unittest discover --start-directory .claude/hooks --verbose`
-- Package check lint and types: `uvx ruff check .claude/hooks`, `uvx ruff format --check .claude/hooks` and `uvx mypy --strict .claude/hooks`
+- Package check lint and types: `uvx ruff@0.16.9 check .claude/hooks`, `uvx ruff@0.16.9 format --check .claude/hooks` and `uvx mypy@2.3.1 --strict .claude/hooks`
 
 Every pull request that adds tooling also adds its commands to this section.
 
@@ -75,7 +75,7 @@ Before adding any package:
 
 Pin versions through the lockfile. Never install from a URL, a git branch or a local path unless Aisha approves it.
 
-Add Python packages with `uv add <name>==<version>` and JavaScript packages with `pnpm add <name>@<version>`, one package at a time. Never upgrade in bulk with commands such as `pnpm update` or `uv lock --upgrade`: Dependabot proposes upgrades. A hook checks every install before it runs (docs/workflow.md, "The package check"). If it blocks one, do not work around it: tell Aisha what it blocked and why, with the links it gave. Only Aisha approves an exception, by adding the exact version to `.claude/approved-packages.txt` in a pull request.
+Add Python packages with `uv add <name>==<version>` and JavaScript packages with `pnpm add <name>@<version>`, one package at a time. Run one-off tools at an exact version too: `uvx <name>@<version>` or `pnpm dlx <name>@<version>`. Never upgrade in bulk with commands such as `pnpm update` or `uv lock --upgrade`: Dependabot proposes upgrades. A hook checks every install before it runs (docs/workflow.md, "The package check"). If it blocks one, do not work around it: tell Aisha what it blocked and why, with the links it gave. Only Aisha approves an exception, by adding the exact version to `.claude/approved-packages.txt` in a pull request.
 
 ## UI rules
 
