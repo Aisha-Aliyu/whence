@@ -162,7 +162,7 @@ COREPACK_TOOLS = {
 }
 INSTALL_WORD = re.compile(
     r"\b(pip3?|uvx?|pipx|npm|npx|pnpm|pnpx|yarn|bunx?|deno|poetry|pipenv|pdm|conda|"
-    r"mamba|corepack|curl|wget)\b"
+    r"mamba|corepack|curl|wget|upgrade-deps)\b"
 )
 PYTHON_WAY = (
     "Add Python packages with `uv add <name>==<version>`, run the project's own tools "
@@ -614,7 +614,13 @@ class Plan:
     requests: list[Request] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
     downloads: set[str] = field(default_factory=set)  # names of files it downloads
-    cwd: str = "."  # the directory the command runs in, for reading script files
+    written: set[str] = field(default_factory=set)  # names of files it writes
+    scripts: list[str] = field(
+        default_factory=list
+    )  # scripts `uv run` reads headers of
+    # The directory the command runs in, for reading script files. None when a `cd`
+    # goes somewhere the check cannot work out, such as `cd "$DIR"`.
+    cwd: str | None = "."
 
 
 @dataclass
@@ -788,17 +794,43 @@ def script_of(program: str, args: list[str]) -> str | None:
     return None
 
 
-def reads_code_from_stdin(program: str, args: list[str]) -> bool:
+def reads_code_from_stdin(program: str, args: list[str], depth: int = 0) -> bool:
     """True when a shell or interpreter would run whatever arrives on stdin."""
     if program in SHELLS:
         has_c, has_s, operand = shell_options(args)
-        return not has_c and (has_s or operand in STDIN)
+        if has_c:  # `bash -c 'source /dev/stdin'` runs stdin through its command text
+            return operand is not None and text_runs_stdin(operand, depth + 1)
+        return has_s or operand in STDIN
     if PYTHON.match(program):
         call = read_python_args(args)
         return call.module is None and call.code is None and call.script in STDIN
     if program in INTERPRETERS:
         return not inline_code(args) and script_of(program, args) in STDIN
+    if program == "eval":
+        return text_runs_stdin(" ".join(args), depth + 1)
     return program in ("source", ".") and script_of(program, args) in STDIN
+
+
+def text_runs_stdin(text: str, depth: int) -> bool:
+    """True when shell text contains a command that runs code from stdin.
+
+    Any position counts, because `cat | sh` inside `bash -c` passes the outer stdin
+    on to sh. Text that cannot be read, or is nested too deeply, counts as running
+    stdin, so the caller blocks instead of guessing.
+    """
+    if depth > MAX_NESTING:
+        return True
+    try:
+        lexer = lex(text)
+    except ParseError:
+        return True
+    for tokens in [lexer.tokens, *lexer.nested]:
+        for pipeline in pipelines(tokens):
+            for command in pipeline:
+                program, args = program_of(command.argv)
+                if reads_code_from_stdin(program, args, depth):
+                    return True
+    return False
 
 
 def code_texts(program: str, args: list[str], command: Command) -> list[str]:
@@ -853,6 +885,19 @@ def downloaded_files(program: str, args: list[str], command: Command) -> set[str
         names |= {
             urllib.parse.urlsplit(a).path.rpartition("/")[2] for a in args if "://" in a
         }
+    return {os.path.basename(name) for name in names if name and name != "-"}
+
+
+def written_files(program: str, args: list[str], command: Command) -> set[str]:
+    """The names of files a command writes: redirects, tee, cp, mv, sed -i and similar.
+
+    Only names are kept, so a file with the same name in another folder counts too.
+    """
+    names = {t for op, t in command.redirects if op in (">", ">>", ">|", "&>", "&>>")}
+    in_place = any(arg.startswith(("-i", "--in-place")) for arg in args)
+    copies = program in ("tee", "cp", "mv", "ln", "install", "rsync")
+    if copies or (program in ("sed", "perl") and in_place):
+        names |= {arg for arg in args if not arg.startswith("-")}
     return {os.path.basename(name) for name in names if name and name != "-"}
 
 
@@ -1121,13 +1166,26 @@ def check_config_change(tool: str, verb: str, tail: list[str], plan: Plan) -> No
             )
 
 
-def inline_script_requests(path: str, plan: Plan) -> None:
-    """`uv run script.py` installs the packages listed in the script's own header."""
+def inline_script_requests(path: str, plan: Plan, directory: str = ".") -> None:
+    """`uv run script.py` installs the packages listed in the script's own header.
+
+    The script is read before the command runs, so a script the check cannot read,
+    including one the same command creates, blocks the command.
+    """
+    plan.scripts.append(path)
+    location = os.path.join(directory, path)
     try:
-        with open(os.path.join(plan.cwd, path), "rb") as handle:
+        if plan.cwd is None and not os.path.isabs(location):
+            raise OSError("the command changes to a directory the check cannot follow")
+        with open(os.path.join(plan.cwd or "", location), "rb") as handle:
             text = handle.read(MAX_SCRIPT_BYTES + 1).decode("utf-8", "replace")
     except OSError:
-        return  # no such file yet, so uv will fail too
+        plan.problems.append(
+            f"The check could not read {path} before the command runs, so it cannot vet "
+            "the dependencies the script lists. Create the script first, then run it "
+            "with `uv run` in a separate command."
+        )
+        return
     match = SCRIPT_METADATA.search(text)
     if match is None:
         return
@@ -1145,7 +1203,9 @@ def inline_script_requests(path: str, plan: Plan) -> None:
             "vet them."
         )
         return
-    if RISKY_SETTING.search(json.dumps(metadata.get("tool", {}))):
+    tool = as_dict(metadata.get("tool"))
+    sources = as_dict(tool.get("uv")).get("sources")  # git, path or URL sources
+    if sources or RISKY_SETTING.search(json.dumps(tool)):
         plan.problems.append(
             f"{path} sets its own index or package source, so the check cannot vet its "
             "dependencies."
@@ -1240,7 +1300,9 @@ def plan_uv(args: list[str], plan: Plan) -> None:
             for item in spec.split(","):
                 parse_pypi_spec(item, plan, at_version=True)
         if script:
-            inline_script_requests(script, plan)
+            # `uv --directory api run tool.py` runs api/tool.py.
+            directory = [*options.get("--directory", []), *more.get("--directory", [])]
+            inline_script_requests(script, plan, (directory or ["."])[-1])
     elif sub == "tool" and tail[:1] in (["run"], ["install"]):
         more = plan_tool_run(tail[1:], plan, f"uv tool {tail[0]}")
     else:
@@ -1303,6 +1365,13 @@ def plan_pnpm(args: list[str], plan: Plan, depth: int) -> None:
     while index is not None and args[index] in ("recursive", "multi", "m"):
         args = args[index + 1 :]
         index = find_verb(args, PNPM_VERBS, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS)
+        # Options between `recursive` and the subcommand count too.
+        head = args if index is None else args[:index]
+        _, more, _ = read_args(
+            head, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS, frozenset(), plan, "pnpm"
+        )
+        for name, values in more.items():
+            options.setdefault(name, []).extend(values)
     if index is None:
         return
     verb, tail = args[index], args[index + 1 :]
@@ -1358,6 +1427,10 @@ def plan_npm(args: list[str], plan: Plan) -> None:
 def plan_corepack(args: list[str], plan: Plan) -> None:
     """corepack downloads the package manager version a command names."""
     verb = args[0] if args else ""
+    tool, at_sign, _ = program_name(verb).partition("@")
+    if tool in COREPACK_TOOLS and not at_sign:
+        # Without a version, corepack downloads whichever version it picks.
+        plan.problems.append(pin_problem(f"corepack {tool}", f"corepack {tool}@1.2.3"))
     if verb == "up":
         plan.problems.append(f"`corepack up` {BULK_UPGRADE}")
     elif verb in ("use", "install", "prepare", "pack", "hydrate"):
@@ -1385,7 +1458,7 @@ def plan_xargs(args: list[str], plan: Plan, depth: int) -> None:
         probe = [word.replace(replace, XARGS_INPUT) for word in command]
     else:
         probe = [*command, XARGS_INPUT]
-    trial = Plan(downloads=set(plan.downloads), cwd=plan.cwd)
+    trial = Plan(downloads=set(plan.downloads), written=plan.written, cwd=plan.cwd)
     plan_simple_command(Command(probe), trial, depth + 1)
     from_stdin = any(XARGS_INPUT in r.name for r in trial.requests) or any(
         XARGS_INPUT in p for p in trial.problems
@@ -1395,6 +1468,7 @@ def plan_xargs(args: list[str], plan: Plan, depth: int) -> None:
             "Packages passed through `xargs` cannot be checked. Name each package in "
             "the command."
         )
+    plan.scripts += trial.scripts
     plan.requests += [r for r in trial.requests if XARGS_INPUT not in r.name]
     plan.problems += [p for p in trial.problems if XARGS_INPUT not in p]
 
@@ -1460,6 +1534,7 @@ def plan_program(
             "Running a downloaded script is blocked, because nothing checks what it runs. "
             "Download the file, read it, then decide whether to run it."
         )
+    plan.written |= written_files(program, args, command)
     if program in DOWNLOADERS:
         plan.downloads |= downloaded_files(program, args, command)
     elif program in SHELLS:
@@ -1544,10 +1619,14 @@ def plan_simple_command(command: Command, plan: Plan, depth: int) -> None:
     if not stripped:
         return
     program, args = program_name(stripped[0]), stripped[1:]
-    if program == "cd":
-        target = args[0] if args else ""
-        if target and target not in ("-", "~") and not target.startswith("~"):
-            plan.cwd = os.path.join(plan.cwd, target)
+    if program in ("cd", "pushd", "popd"):
+        targets = [arg for arg in args if not arg.startswith("-") or arg == "-"]
+        target = targets[0] if targets else "~"
+        unknown = program == "popd" or target == "-" or "$" in target or "`" in target
+        if unknown or (program == "pushd" and not targets):
+            plan.cwd = None
+        elif plan.cwd is not None:
+            plan.cwd = os.path.join(plan.cwd, os.path.expanduser(target))
         return
     plan_program(program, args, command, plan, depth)
     if depth >= MAX_NESTING:
@@ -1611,6 +1690,13 @@ def plan_command(text: str, plan: Plan, depth: int = 0) -> None:
     plan_tokens(lexer.tokens, plan, depth)
     for nested in lexer.nested:
         plan_tokens(nested, plan, depth + 1)
+    if depth == 0:  # after the whole command is read, so the order does not matter
+        for name in sorted({os.path.basename(s) for s in plan.scripts} & plan.written):
+            plan.problems.append(
+                f"This command writes {name} and runs it with `uv run`, so the check "
+                "cannot read the dependencies the script will list. Write the file in "
+                "one command and run it in the next."
+            )
 
 
 # ---------------------------------------------------------------- registries and OSV
@@ -1743,7 +1829,11 @@ class Registry:
         }
         ids: list[str] = []
         for _ in range(20):
-            answer = as_dict(self.get_json(f"{self.osv_url}/v1/query", body=body))
+            answer = self.get_json(f"{self.osv_url}/v1/query", body=body)
+            # OSV answers an object even when it knows of nothing, so a 404 or any
+            # other body means the check could not finish.
+            if not isinstance(answer, dict):
+                raise CheckError("api.osv.dev sent no usable answer")
             for vuln in map(as_dict, as_list(answer.get("vulns"))):
                 if vuln.get("withdrawn"):
                     continue
