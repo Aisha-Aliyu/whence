@@ -89,6 +89,7 @@ If approvals stop working in a cloud session after this change, add `raw.githubu
 
 ### What it cannot do
 
+- It runs only where Claude Code reads this repository's settings: a Claude Code session started on this repository (from the Code tab in the Claude app, claude.ai/code, the desktop app or a terminal) or Claude Code inside a codespace. [Threads in a Claude Project](https://code.claude.com/docs/en/claude-projects) do not run a repository's hooks, so the check does not run there. Do Whence work in a session started on the repository.
 - It reads commands, so it cannot see installs that a script, a Makefile or a program performs, or a command disguised on purpose.
 - It checks commands, not file edits. A dependency typed into `package.json` or `pyproject.toml` by hand skips it, because `uv sync`, `uv run` and `pnpm install` update the lockfile to match before they install. Settings stored in files, such as `.npmrc`, `uv.toml` or the `[tool.uv]` table in `pyproject.toml`, can also point installs at another index. A second hook that checks edits to these files comes in its own pull request before Day 4, when the first of them appears. Until then, pull request review of the lockfile and settings diffs is the check.
 - It checks the packages a command names, not their dependencies. The lockfile review in each pull request, the dependency review check, Dependabot's 7-day cooldown, and the package managers' own cooldowns (uv's `exclude-newer` from Day 4, pnpm's `minimumReleaseAge` from Day 14) cover those.
