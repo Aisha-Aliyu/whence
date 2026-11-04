@@ -15,7 +15,7 @@ The plan follows the software development life cycle (SDLC): plan, design, build
 
 ## Phase 1: Plan and design
 
-- [ ] Day 1, plan and guardrails. Name, product spec, architecture, roadmap, working rules. Protected main branch, CodeRabbit, secret scanning, Dependabot, CLAUDE.md. Concepts: SDLC, branch protection, secrets management, CI/CD, IAM.
+- [x] Day 1, plan and guardrails. Name, product spec, architecture, roadmap, working rules. Protected main branch, CodeRabbit, secret scanning, Dependabot, CLAUDE.md. Concepts: SDLC, branch protection, secrets management, CI/CD, IAM.
 - [ ] Day 2, development environment and AI guardrails. A dev container for Codespaces (Python, Node, Docker), the Claude Code cloud environment, a Claude Code hook that checks every package before it installs (does it exist, how old is it, does it have known vulnerabilities or malware reports), a read-only review agent, verified commits. Concepts: supply chain attacks, slopsquatting, dependency hell.
 - [ ] Day 3, design system. Color tokens from the palette, type, spacing, radius, our own SVG logo, favicon and icons, component rules, wireframes of the main screens, and the application for a free whence.eu.org domain, which can take months to approve. Concepts: design tokens, contrast ratios, WCAG 2.2.
 

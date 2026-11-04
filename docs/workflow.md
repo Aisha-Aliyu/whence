@@ -9,7 +9,7 @@ These rules apply to every change, including changes written by AI. Claude Code 
 3. Open a pull request. The template asks what changed, why, the trade-offs, how it was tested and how to roll it back.
 4. Automated checks run: secret scan and dependency review from Day 1, then lint, type checks, tests, CodeQL and evaluations as each arrives.
 5. CodeRabbit reviews the pull request. Small public repositories sometimes have to ask, so if no review appears within a few minutes, comment `@coderabbitai review`.
-6. An independent review agent, with no memory of how the code was written, reviews it against the checklist below.
+6. An independent review agent, with no memory of how the code was written, reviews it against the checklist below. See [the review agent](#the-review-agent).
 7. Aisha reads the change. If she cannot explain a part of it, Claude explains it or simplifies it.
 8. Resolve every review conversation, then squash and merge. GitHub deletes the branch.
 
@@ -97,6 +97,16 @@ If approvals stop working in a cloud session after this change, add `raw.githubu
 - Claude Code reloads its settings when the file changes, so a session that edits `.claude/` could switch the check off. CLAUDE.md forbids editing `.claude/` unless the task asks for it, and CodeRabbit flags every change there. The hook guards against mistakes; the hard limits are the cloud environment's network allowlist and branch protection.
 
 Run its tests with `python3 -m unittest discover --start-directory .claude/hooks --verbose`. The lint and type commands are in CLAUDE.md.
+
+## The review agent
+
+[.claude/agents/reviewer.md](../.claude/agents/reviewer.md) defines a Claude Code subagent named `reviewer`. It starts with a fresh context, so it has not seen the conversation that wrote the code, and it judges only what is in the repository. It reads the diff against `main`, goes through the ten checks above, runs the tests, linters and type checks, and replies with a verdict and findings, most severe first.
+
+To run it, ask Claude Code: "Use the reviewer agent to review this branch." Like the package check, it is available only in a Claude Code session started on this repository, because [threads in a Claude Project](https://code.claude.com/docs/en/claude-projects) do not load a repository's agents or hooks. Claude Code runs it after finishing a change, before the pull request goes to Aisha. Its findings go into the pull request description, under "How it was tested", with what was fixed.
+
+It is read-only. Its tools are Read, Grep, Glob and Bash, with no file editing. Bash could still change files, so a second PreToolUse hook, [.claude/hooks/read_only_bash.py](../.claude/hooks/read_only_bash.py), checks every shell command the reviewer starts. It allows only read-only git commands (`git diff`, `log`, `show`, `status`, `blame`, `ls-files`, `rev-parse`, `merge-base`, `grep` and `git branch --show-current`), `python3 -m unittest`, and the ruff and mypy commands from CLAUDE.md. It blocks pipes, redirects, chained commands, variables, substitutions, wildcards, and the git options that write files or start other programs, including their shortened forms. Commands from anyone other than the reviewer pass this hook untouched.
+
+The rule lives in `.claude/settings.json`, not in the agent file, because Claude Code skips hooks in an agent file when the folder is not marked as trusted. Running the tests runs the project's own code, so the hook limits what the reviewer chooses to run; it is not a sandbox. CodeRabbit stays the second reviewer, and Aisha the last one.
 
 ## Working with Claude Code
 
