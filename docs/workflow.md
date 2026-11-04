@@ -67,7 +67,7 @@ Claude Code runs [.claude/hooks/check_packages.py](../.claude/hooks/check_packag
 3. [OSV](https://osv.dev), the open vulnerability database, which also collects malware reports, lists nothing against that version.
 4. The version is not yanked on PyPI or deprecated on npm.
 
-The hook also enforces how we install. Every install names an exact version, so the check vets exactly what gets installed: `uv add httpx==0.28.1` and `pnpm add zod@4.1.12` for dependencies, `uvx ruff@0.16.9` and `pnpm dlx create-next-app@16.0.0` for one-off tools. Python packages come from PyPI through uv, and JavaScript packages come from npm through pnpm, so pip, npm, npx, yarn, Poetry and similar tools are blocked. Nothing installs from a URL, a git repository, a local path, a requirements file, or another index or registry, whether an option, an environment variable or `npm config set` points there. When `uv run` starts a script that lists its own dependencies at the top, the hook checks those too. Bulk upgrades such as `pnpm update` and `uv lock --upgrade` are blocked, because Dependabot proposes upgrades in reviewed pull requests. Running a downloaded script is blocked, whether it is piped into a shell or run later in the same command. Installs from the reviewed lockfiles (`uv sync`, `pnpm install`) run without checks.
+The hook also enforces how we install. Every install names an exact version, so the check vets exactly what gets installed: `uv add httpx==0.28.1` and `pnpm add zod@4.1.12` for dependencies, `uvx ruff@0.16.9` and `pnpm dlx create-next-app@16.0.0` for one-off tools. Python packages come from PyPI through uv, and JavaScript packages come from npm through pnpm, so pip, npm, npx, yarn, Poetry and similar tools are blocked. Nothing installs from a URL, a git repository, a local path, a requirements file, or another index, registry or mirror, whether an option, an environment variable or `npm config set` points there. When `uv run` starts a script that lists its own dependencies at the top, the hook checks those too. Bulk upgrades such as `pnpm update` and `uv lock --upgrade` are blocked, because Dependabot proposes upgrades in reviewed pull requests. Running a downloaded script is blocked, whether it is piped into a shell or run later in the same command. Installs from the reviewed lockfiles (`uv sync`, `pnpm install`) run without checks.
 
 When every package passes, Claude receives each package's link and the age of its newest file, plus the latest version when an older one was pinned. When anything fails, the command does not run, and Claude receives the reason, the links and, for a version that is too new, an older version past the cooldown, which the check vets again when Claude tries it. Text written by package authors, such as an npm deprecation message, is never passed on, because it could carry instructions aimed at Claude. If a check cannot finish, for example because a registry is down, the command is blocked. Claude Code lets a hook that times out pass, so the script stops itself after 60 seconds and blocks, and settings.json turns a crash or a missing Python into a block too.
 
@@ -77,12 +77,12 @@ Sometimes a version is needed before its 7 days are up, such as a security fix. 
 
 ### Network access
 
-The hook needs `pypi.org`, `registry.npmjs.org` and `api.osv.dev`, and reads approvals from `raw.githubusercontent.com`. Codespaces reaches all four. A Claude Code cloud environment on the default **Trusted** network level reaches all but OSV, so it blocks every install until OSV is allowed:
+The hook needs `pypi.org`, `registry.npmjs.org` and `api.osv.dev`, and reads approvals from `raw.githubusercontent.com`. Codespaces reaches all four. A Claude Code cloud environment on the default Trusted network level reaches all but OSV, so it blocks every install until OSV is allowed:
 
-1. In a Claude Code cloud session, tap the arrow after the session title at the top, then **Edit cloud environment**. On the new-session screen, the same dialog opens from the environment selector, the first control under the message box, through the settings icon on the environment's row.
-2. Set **Network access** to **Custom**.
-3. In **Allowed domains**, enter `api.osv.dev`.
-4. Tick **Also include default list of common package managers**, so the registries stay reachable.
+1. In a Claude Code cloud session, tap the arrow after the session title at the top, then Edit cloud environment. On the new-session screen, the same dialog opens from the environment selector, the first control under the message box, through the settings icon on the environment's row.
+2. Set Network access to Custom.
+3. In Allowed domains, enter `api.osv.dev`.
+4. Tick Also include default list of common package managers, so the registries stay reachable.
 5. Save. Running sessions pick up the change within about a minute.
 
 If approvals stop working in a cloud session after this change, add `raw.githubusercontent.com` to the allowed domains too. Until then, the cooldown simply stays in force.

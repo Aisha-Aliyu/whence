@@ -17,10 +17,10 @@ blocks the command unless each package passes these checks:
 It also enforces the project's install rules: Python packages come from PyPI through
 uv, JavaScript packages come from npm through pnpm, always at an exact version, and
 nothing installs from a URL, a git repository, a local path, a requirements file, or
-another index or registry set by an option or an environment variable. Bulk upgrades
-are blocked, because Dependabot proposes upgrades in reviewed pull requests. Running
-a downloaded script, by a pipe or in the same command that downloads it, is blocked
-too.
+another index, registry or mirror set by an option or an environment variable. Bulk
+upgrades are blocked, because Dependabot proposes upgrades in reviewed pull requests.
+Running a downloaded script, by a pipe or in the same command that downloads it, is
+blocked too.
 
 Exit code 0 lets the command run. Exit code 2 blocks it, and the message on stderr
 tells Claude why. If a check cannot finish, for example because a registry is
@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
-from typing import Any
+from typing import Any, TypeGuard
 
 # ---------------------------------------------------------------- policy
 
@@ -131,16 +131,17 @@ XARGS_VALUE_FLAGS = words(
 )
 XARGS_INPUT = "xargs-input"  # stands for the words xargs reads from stdin
 
-# Settings that send installs to another index or registry, or turn off certificate
-# checks. They are blocked as options (--index-url, --registry, --config.registry)
-# and as environment variables (UV_INDEX_URL, npm_config_registry).
+# Settings that send downloads to another index, registry or mirror, or turn off
+# certificate or signature checks. They are blocked as options (--index-url,
+# --registry, --config.registry) and as environment variables (UV_INDEX_URL,
+# npm_config_registry, COREPACK_NPM_REGISTRY).
 RISKY_SETTING = re.compile(
-    r"index|registry|find.links|config.file|userconfig|globalconfig|insecure|"
-    r"trusted.host|strict.ssl|cafile|tls.reject",
+    r"index|registry|mirror|find.links|config.file|userconfig|globalconfig|insecure|"
+    r"trusted.host|strict.ssl|cafile|tls.reject|integrity",
     re.IGNORECASE,
 )
 PACKAGE_TOOL_VARIABLE = re.compile(
-    r"^(uv|pip|npm_config|pnpm_config|yarn|node)_", re.IGNORECASE
+    r"^(uv|pip|npm_config|pnpm_config|yarn|node|corepack)_", re.IGNORECASE
 )
 
 # Package tools this project does not use. Installs through them would skip the check.
@@ -885,9 +886,13 @@ def starts_nested_command(argv: list[str], j: int) -> bool:
     if base in PACKAGE_MANAGERS or PIP.match(base) or name in SHELLS:
         return True
     if PYTHON.match(name):
-        module = read_python_args(argv[j + 1 :]).module
-        return module in ("pip", "pipx", "uv")
+        return top_module(read_python_args(argv[j + 1 :]).module) in PACKAGE_MANAGERS
     return False
+
+
+def top_module(module: str | None) -> str:
+    """`python -m pip.__main__` runs pip, so the first name decides what runs."""
+    return (module or "").partition(".")[0]
 
 
 def unknown_option(
@@ -1031,7 +1036,7 @@ def parse_pypi_spec(spec: str, plan: Plan, at_version: bool = False) -> None:
         version = rest[3:].strip()
     elif rest.startswith("=="):
         version = rest[2:].strip()
-    if not PY_VERSION.match(version):
+    if not PY_VERSION.fullmatch(version):
         plan.problems.append(pin_problem(spec, f"{name}==1.2.3"))
         return
     normalized = re.sub(r"[-_.]+", "-", name).lower()
@@ -1062,7 +1067,7 @@ def parse_npm_spec(spec: str, plan: Plan) -> None:
     if version.startswith(NOT_FROM_NPM) or "/" in version or ":" in version:
         plan.problems.append(f"`{spec}` is not a package from the npm registry.")
         return
-    if len(name) > 214 or not NPM_NAME.match(name):
+    if len(name) > 214 or not NPM_NAME.fullmatch(name):
         plan.problems.append(
             f"`{spec}` looks like a GitHub repository, not an npm package. Install "
             "packages by name."
@@ -1071,7 +1076,7 @@ def parse_npm_spec(spec: str, plan: Plan) -> None:
         )
         return
     version = version.removeprefix("v")
-    if not EXACT_SEMVER.match(version):
+    if not EXACT_SEMVER.fullmatch(version):
         plan.problems.append(pin_problem(spec, f"{name}@1.2.3"))
         return
     plan.requests.append(Request(NPM, name, version))
@@ -1478,13 +1483,14 @@ def plan_program(
         plan_git(args, plan, depth)
     elif PYTHON.match(program):
         call = read_python_args(args)
-        if call.module == "venv" and "--upgrade-deps" in call.rest:
+        module = top_module(call.module)
+        if module == "venv" and "--upgrade-deps" in call.rest:
             plan.problems.append(
                 "`python -m venv --upgrade-deps` installs the newest pip and setuptools "
                 "without the check. Leave out --upgrade-deps."
             )
-        elif call.module:
-            plan_program(call.module, call.rest, Command(), plan, depth + 1)
+        elif module:
+            plan_program(module, call.rest, Command(), plan, depth + 1)
     elif program == "uv":
         plan_uv(args, plan)
     elif program == "uvx":
@@ -1741,12 +1747,13 @@ class Registry:
             for vuln in map(as_dict, as_list(answer.get("vulns"))):
                 if vuln.get("withdrawn"):
                     continue
+                # An ID in an unexpected format still counts, as "", but is never
+                # repeated to Claude, because whoever wrote it controls its text.
                 primary = vuln.get("id")
-                for candidate in [primary, *as_list(vuln.get("aliases"))]:
-                    if not isinstance(candidate, str) or not OSV_ID.match(candidate):
-                        continue
-                    if candidate == primary or candidate.startswith("MAL-"):
-                        ids.append(candidate)
+                ids.append(primary if valid_osv_id(primary) else "")
+                for alias in as_list(vuln.get("aliases")):
+                    if valid_osv_id(alias) and alias.startswith("MAL-"):
+                        ids.append(alias)
             token = answer.get("next_page_token")
             if not token:
                 return ids
@@ -1807,7 +1814,7 @@ def age_text(delta: timedelta) -> str:
 
 def shown_version(value: Any) -> str | None:
     """A registry's version string, if it is short and plain enough to show Claude."""
-    if isinstance(value, str) and len(value) <= 32 and SHOWN_VERSION.match(value):
+    if isinstance(value, str) and len(value) <= 32 and SHOWN_VERSION.fullmatch(value):
         return value
     return None
 
@@ -1835,7 +1842,7 @@ def older_version(
     candidates = [
         version
         for version, when in times.items()
-        if pattern.match(version)
+        if pattern.fullmatch(version)
         and release_key(version) < ceiling
         and now - when >= MIN_VERSION_AGE
     ]
@@ -1857,10 +1864,13 @@ def parse_approvals(text: str) -> set[str]:
     return approved
 
 
+def valid_osv_id(value: Any) -> TypeGuard[str]:
+    return isinstance(value, str) and OSV_ID.fullmatch(value) is not None
+
+
 def osv_problems(registry: Registry, request: Request) -> list[str]:
-    ids = sorted(
-        set(registry.osv_ids(request.ecosystem, request.name, request.version))
-    )
+    found = registry.osv_ids(request.ecosystem, request.name, request.version)
+    ids = sorted({i for i in found if i})
     malware = [i for i in ids if i.startswith("MAL-")]
     if malware:
         return [
@@ -1869,13 +1879,27 @@ def osv_problems(registry: Registry, request: Request) -> list[str]:
                 f"install it. https://osv.dev/vulnerability/{malware[0]}"
             )
         ]
-    if not ids:
-        return []
-    links = " ".join(f"https://osv.dev/vulnerability/{i}" for i in ids[:5])
-    more = f" and {len(ids) - 5} more" if len(ids) > 5 else ""
-    return [
-        f"Version {request.version} has known vulnerabilities: {links}{more}. Pick another."
-    ]
+    problems = []
+    if ids:
+        links = " ".join(f"https://osv.dev/vulnerability/{i}" for i in ids[:5])
+        more = f" and {len(ids) - 5} more" if len(ids) > 5 else ""
+        problems.append(
+            f"Version {request.version} has known vulnerabilities: {links}{more}. "
+            "Pick another."
+        )
+    unreadable = found.count("")
+    if unreadable:
+        count = f"{unreadable} {'more ' if ids else ''}"
+        noun = "advisory" if unreadable == 1 else "advisories"
+        search = urllib.parse.urlencode(
+            {"ecosystem": request.ecosystem, "q": request.name}
+        )
+        problems.append(
+            f"OSV lists {count}{noun} for this version with an ID in an unexpected "
+            "format, so the check does not repeat it. Look the version up at "
+            f"https://osv.dev/list?{search}"
+        )
+    return problems
 
 
 def age_problems(
