@@ -38,6 +38,9 @@ reviews:
     - path: ".github/**"
       instructions: |
         Repository automation. Check that actions are pinned to full commit SHAs, permissions follow least privilege, pull_request_target never checks out untrusted code, secrets are never printed, and checkout sets persist-credentials to false.
+    - path: ".claude/**"
+      instructions: |
+        Claude Code guardrails. Flag any change that weakens the package check in hooks/check_packages.py, lets a command through when a check cannot finish, removes or loosens a test, turns off a hook in settings.json, or adds a line to approved-packages.txt without a reason and a date.
     - path: "docs/**"
       instructions: |
         Documentation. Flag factual errors, contradictions with other docs or with the code, broken links and security mistakes. Ignore wording preferences.
