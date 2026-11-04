@@ -90,6 +90,15 @@ DOWNLOADERS = words("curl wget fetch aria2c http https xh")
 DOWNLOAD_SUBSTITUTION = re.compile(
     r"(\$\(|<\(|`)\s*(sudo\s+)?(curl|wget|fetch|aria2c)\b"
 )
+RUN_DOWNLOAD = (
+    "Running a downloaded script is blocked, because nothing checks what it runs. "
+    "Download the file, read it, then decide whether to run it."
+)
+PIPE_DOWNLOAD = (
+    "Piping a download into a shell or interpreter is blocked, because nothing "
+    "checks what it runs. Download the file, read it, then decide whether to run it."
+)
+URL_SCHEME = re.compile(r"https?://", re.IGNORECASE)
 PYTHON = re.compile(r"^python(\d+(\.\d+)?)?$")
 PIP = re.compile(r"^pip(3(\.\d+)?)?$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
@@ -326,6 +335,8 @@ class Token:
 
 
 REDIRECTS = words("&>> <<< <<- &> >> << >& <& >| <> > <")
+# Written right before a redirect: a descriptor, as in 2>, or {name}, which opens one.
+DESCRIPTOR_WORD = re.compile(r"[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\}")
 # Longest first, so `&&` wins over `&`.
 OPERATORS = sorted(REDIRECTS | words("&& || ;; |& ; & | ( )"), key=len, reverse=True)
 MAX_NESTING = 32
@@ -501,8 +512,8 @@ class Lexer:
         raise ParseError("a $' quote is not closed")
 
     def read_redirect(self, i: int, op: str) -> int:
-        if self.in_word and "".join(self.word).isdigit():
-            self.word, self.in_word = [], False  # a file descriptor, as in 2>/dev/null
+        if self.in_word and DESCRIPTOR_WORD.fullmatch("".join(self.word)):
+            self.word, self.in_word = [], False  # not an argument, as in 2>/dev/null
         else:
             self.end_word()
         i += len(op)
@@ -625,11 +636,18 @@ class Plan:
     cwds: set[str] | None = field(default_factory=lambda: {"."})
 
 
+# What >& and <& take to copy or close a descriptor, as in >&2 or <&-, not a file name.
+DUPLICATE = re.compile(r"[0-9]+-?|-")
+
+
 @dataclass
 class Command:
     argv: list[str] = field(default_factory=list)
     heredocs: list[str] = field(default_factory=list)
     redirects: list[tuple[str, str]] = field(default_factory=list)  # (operator, target)
+    # Bodies of here-documents whose delimiter is not quoted. The shell runs the $(...)
+    # and `...` in them before the command reads them.
+    expanded: list[str] = field(default_factory=list)
 
     def inputs(self) -> list[str]:
         """What arrives on stdin through < and <<< (here-documents are separate)."""
@@ -637,6 +655,14 @@ class Command:
 
     def here_strings(self) -> list[str]:
         return [target for op, target in self.redirects if op == "<<<"]
+
+    def outputs(self) -> set[str]:
+        """The files its redirects write, as in > file, &> file and >& file."""
+        ops = (">", ">>", ">|", "&>", "&>>", "<>")
+        names = {target for op, target in self.redirects if op in ops}
+        return names | {
+            t for op, t in self.redirects if op == ">&" and not DUPLICATE.fullmatch(t)
+        }
 
 
 def pipelines(tokens: list[Token]) -> list[list[Command]]:
@@ -656,6 +682,8 @@ def pipelines(tokens: list[Token]) -> list[list[Command]]:
             redirect = token.value
         elif token.kind == "heredoc":
             command.heredocs.append(token.value)
+            if not token.quoted:
+                command.expanded.append(token.value)
         elif token.value in ("|", "|&"):
             pipeline.append(command)
             command, redirect = Command(), None
@@ -767,12 +795,26 @@ def shell_options(args: list[str]) -> tuple[bool, bool, str | None]:
     return has_c, has_s, None
 
 
-STDIN = (None, "-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
+# Files that are open descriptors. `3<&0` makes /dev/fd/3 stdin too.
+STDIN_PATH = re.compile(r"dev/(std(in|out|err)|fd/[0-9]+)|proc/[^/]+/fd/[0-9]+")
 
 
 def from_stdin(operand: str | None) -> bool:
-    """True when a script operand is stdin, or a process substitution that may read it."""
-    return operand in STDIN or (operand or "").startswith("<(")
+    """True when a script operand may be stdin.
+
+    That covers no operand and "-", /dev/stdin and descriptors such as /dev/fd/3,
+    process substitutions, which may read stdin, and names known only when the
+    command runs, such as "$f". Leading slashes and .. parts are ignored, because
+    ../../dev/stdin reaches /dev/stdin as well.
+    """
+    if operand is None or operand == "-":
+        return True
+    if operand.startswith("<(") or "$" in operand or "`" in operand:
+        return True
+    path = os.path.normpath(operand).lstrip("/")
+    while path.startswith("../"):
+        path = path[3:]
+    return STDIN_PATH.fullmatch(path) is not None
 
 
 def inline_code(args: list[str]) -> list[str]:
@@ -802,7 +844,8 @@ def script_of(program: str, args: list[str]) -> str | None:
 
 
 def reads_code_from_stdin(program: str, args: list[str], depth: int = 0) -> bool:
-    """True when a shell or interpreter would run whatever arrives on stdin."""
+    """True when a shell or interpreter would run code from stdin, or from a file
+    that may be stdin."""
     if program in SHELLS:
         has_c, has_s, operand = shell_options(args)
         if has_c:  # `bash -c 'source /dev/stdin'` runs stdin through its command text
@@ -821,17 +864,16 @@ def reads_code_from_stdin(program: str, args: list[str], depth: int = 0) -> bool
 
 
 def runs_stdin_code(command: Command, depth: int = 0) -> bool:
-    """True when a command runs code from the stdin it inherits.
+    """True when a command runs code from stdin, and so from anything piped into it.
 
-    A command whose stdin comes from a file, a here-document or a here-string does
-    not read the stdin it inherits, so `sh < local.sh` does not count.
+    Its redirects do not change that. zsh, which Claude Code uses when it is the
+    user's shell, reads a pipe as one more input, so `curl ... | sh < local.sh` runs
+    the download and then local.sh. Bash can hand the pipe back through another
+    descriptor, as in `sh 3<&0 <<EOF 0<&3`, or through a substitution, as in
+    `sh <<< "$(cat)"`.
     """
     program, args = program_of(command.argv)
-    if not reads_code_from_stdin(program, args, depth):
-        return False
-    inputs = command.inputs()
-    redirected = inputs and not any(from_stdin(target) for target in inputs)
-    return not (command.heredocs or redirected)
+    return reads_code_from_stdin(program, args, depth)
 
 
 def text_runs_stdin(text: str, depth: int) -> bool:
@@ -870,13 +912,15 @@ def code_texts(program: str, args: list[str], command: Command) -> list[str]:
     elif program in ("source", "."):
         texts += args[:1]
     if reads_code_from_stdin(program, args):
-        texts += command.inputs()
+        # What arrives on stdin is code. The shell fills in the substitutions of an
+        # unquoted here-document first, so `sh <<EOF` with $(curl ...) runs the download.
+        texts += command.inputs() + command.expanded
     return texts
 
 
 def downloaded_files(program: str, args: list[str], command: Command) -> set[str]:
     """The names of the files a curl or wget command saves."""
-    names = {t for op, t in command.redirects if op in (">", ">>", ">|", "&>", "&>>")}
+    names = command.outputs()
     letter, long_flag = (
         ("o", "--output") if program == "curl" else ("O", "--output-document")
     )
@@ -927,22 +971,51 @@ def target_directory(args: list[str]) -> str | None:
     return None
 
 
+def edits_in_place(program: str, args: list[str]) -> bool:
+    """True when sed or perl rewrites its files: -i, also inside a cluster like -pi."""
+    takes_value = "efl" if program == "sed" else "0CdDeEFIlmMx"
+    for arg in args:
+        if arg.startswith("--in-place"):
+            return True
+        if arg.startswith("-") and not arg.startswith("--"):
+            for letter in arg[1:]:
+                if letter == "i":
+                    return True
+                if letter in takes_value:  # the rest of the cluster is its value
+                    break
+    return False
+
+
+def copies_folders(args: list[str]) -> bool:
+    """True when cp or rsync copies folders: -r, -R, -a or their long forms."""
+    return any(
+        arg in ("--recursive", "--archive")
+        or (
+            arg.startswith("-")
+            and not arg.startswith("--")
+            and bool(set(arg) & set("rRa"))
+        )
+        for arg in args
+    )
+
+
 def written_files(program: str, args: list[str], command: Command) -> set[str]:
     """The names of files a command writes, or "*" when it may write files the check
     cannot name, such as `git checkout` or a redirect to "$FILE".
 
     Only names are kept, so a file with the same name in another folder counts too.
     """
-    names = {
-        t for op, t in command.redirects if op in (">", ">>", ">|", "&>", "&>>", "<>")
-    }
+    names = command.outputs()
     operands = [arg for arg in args if not arg.startswith("-")]
-    in_place = any(arg.startswith(("-i", "--in-place")) for arg in args)
-    if program == "tee" or (program in ("sed", "perl") and in_place):
+    if program == "tee" or (
+        program in ("sed", "perl") and edits_in_place(program, args)
+    ):
         names |= set(operands)
     elif program == "dd":
         names |= {arg[3:] for arg in args if arg.startswith("of=")}
     elif program in ("cp", "mv", "ln", "install", "rsync") and operands:
+        if program in ("cp", "rsync") and copies_folders(args):
+            names.add("*")  # files inside the folders it copies
         folder = target_directory(args)
         if folder is not None:
             names |= set(operands) - {folder}
@@ -1246,9 +1319,14 @@ def inline_script_requests(path: str, plan: Plan, directory: str = ".") -> None:
     The script is read before the command runs, so a script the check cannot read,
     including one the same command creates, blocks the command.
     """
-    plan.scripts.append(path)
     location = os.path.join(directory, path)
-    if os.path.isabs(location):
+    plan.scripts.append(location)
+    if URL_SCHEME.match(path):  # uv downloads the script, then runs it
+        plan.problems.append(RUN_DOWNLOAD)
+        return
+    if from_stdin(path):  # stdin or a substitution: no file to read beforehand
+        candidates = []
+    elif os.path.isabs(location):
         candidates = [location]
     else:  # every folder the command could be in when uv runs
         candidates = sorted(os.path.join(d, location) for d in plan.cwds or ())
@@ -1257,8 +1335,14 @@ def inline_script_requests(path: str, plan: Plan, directory: str = ".") -> None:
         try:
             with open(candidate, "rb") as handle:
                 data = handle.read(MAX_SCRIPT_BYTES + 1)
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # not in this folder
         except OSError:
-            continue
+            plan.problems.append(
+                f"The check could not read {path}, so it cannot vet the dependencies "
+                "the script lists."
+            )
+            return
         if len(data) > MAX_SCRIPT_BYTES:
             plan.problems.append(
                 f"{path} is larger than the {MAX_SCRIPT_BYTES // (1024 * 1024)} MB the "
@@ -1328,8 +1412,16 @@ def uv_run_command(
     if "-m" in options or "--module" in options:
         return ["python", "-m", *operands], options, None
     as_script = {"-s", "--script"} & set(options)
-    if operands and (operands[0].endswith((".py", ".pyw")) or as_script):
-        return ["python", *operands], options, operands[0]
+    first = operands[0] if operands else ""
+    # uv runs a .py file, a URL or stdin ("-") as a script. Words from xargs may
+    # name one too.
+    if first and (
+        first.endswith((".py", ".pyw"))
+        or as_script
+        or first in ("-", XARGS_INPUT)
+        or URL_SCHEME.match(first)
+    ):
+        return ["python", *operands], options, first
     return operands, options, None
 
 
@@ -1602,6 +1694,26 @@ def plan_script(text: str, plan: Plan, depth: int) -> None:
                     plan_command(token.value, plan, depth)
 
 
+def plan_fed_code(
+    operand: str | None, command: Command, plan: Plan, depth: int
+) -> None:
+    """Code that a shell or `source` reads from stdin or a descriptor: its
+    here-documents and here-strings, and what a process substitution prints.
+    `bash <(echo "uv add x")` runs like `echo "uv add x" | bash`."""
+    for text in command.heredocs + command.here_strings():
+        plan_script(text, plan, depth)
+    for target in [operand or "", *command.inputs()]:
+        if not (target.startswith("<(") and target.endswith(")")):
+            continue
+        try:
+            tokens = lex(target[2:-1]).tokens
+        except ParseError:
+            continue  # quoted text that only looks like <(...); a real one read already
+        for pipeline in pipelines(tokens):
+            for feeder in pipeline:
+                plan_fed_text(feeder, plan, depth)
+
+
 def plan_program(
     program: str, args: list[str], command: Command, plan: Plan, depth: int
 ) -> None:
@@ -1624,10 +1736,7 @@ def plan_program(
         DOWNLOAD_SUBSTITUTION.search(text)
         for text in code_texts(program, args, command)
     ):
-        plan.problems.append(
-            "Running a downloaded script is blocked, because nothing checks what it runs. "
-            "Download the file, read it, then decide whether to run it."
-        )
+        plan.problems.append(RUN_DOWNLOAD)
     plan.written |= written_files(program, args, command)
     if program in DOWNLOADERS:
         plan.downloads |= downloaded_files(program, args, command)
@@ -1635,9 +1744,10 @@ def plan_program(
         has_c, has_s, operand = shell_options(args)
         if has_c and operand is not None:
             plan_script(operand, plan, depth + 1)
-        elif has_s or operand in STDIN:  # bash <<'EOF' runs the here-document
-            for text in command.heredocs + command.here_strings():
-                plan_script(text, plan, depth + 1)
+        elif has_s or from_stdin(operand):  # bash <<'EOF' runs the here-document
+            plan_fed_code(operand, command, plan, depth + 1)
+    elif program in ("source", ".") and from_stdin(script):
+        plan_fed_code(script, command, plan, depth + 1)
     elif program == "eval":
         plan_script(" ".join(args), plan, depth + 1)
     elif program in COMMAND_STRING_RUNNERS:
@@ -1710,8 +1820,11 @@ def plan_simple_command(command: Command, plan: Plan, depth: int) -> None:
                 "checked, so the check cannot vet installs that use it. Remove it."
             )
     stripped = strip_wrappers(argv)
-    if not stripped:
+    if not stripped:  # redirects alone still write, as in `{ ...; } > tool.py`
+        plan.written |= written_files("", [], command)
         return
+    if DOWNLOAD_SUBSTITUTION.search(stripped[0]):  # `$(curl ...)` runs what it prints
+        plan.problems.append(RUN_DOWNLOAD)
     program, args = program_name(stripped[0]), stripped[1:]
     if program in ("cd", "pushd", "popd"):
         targets = [arg for arg in args if not arg.startswith("-") or arg == "-"]
@@ -1732,7 +1845,9 @@ def plan_simple_command(command: Command, plan: Plan, depth: int) -> None:
     inner = inner_command(base, args)
     if inner:  # `uv run python x.py` and `pnpm exec node x.js` run another program
         plan_simple_command(
-            Command(inner, command.heredocs, command.redirects), plan, depth + 1
+            Command(inner, command.heredocs, command.redirects, command.expanded),
+            plan,
+            depth + 1,
         )
     elif runs_other_commands(base):
         k = len(argv) - len(stripped)
@@ -1742,22 +1857,134 @@ def plan_simple_command(command: Command, plan: Plan, depth: int) -> None:
                 break
 
 
+# First words that open a compound command, and the word that closes each one.
+BLOCK_WORDS = {
+    "{": "}",
+    "if": "fi",
+    "case": "esac",
+    "for": "done",
+    "while": "done",
+    "until": "done",
+    "select": "done",
+}
+
+
+@dataclass
+class Block:
+    """A subshell, group, loop or if statement, or the whole command."""
+
+    closer: str | None
+    feeders: list[Command]  # commands whose output reaches the block's stdin
+    earlier: list[Command] = field(default_factory=list)  # in the current pipeline
+    inside: list[Command] = field(default_factory=list)  # every command in the block
+
+
+def fed_commands(tokens: list[Token]) -> list[tuple[Command, list[Command]]]:
+    """Each simple command, with the commands whose output may reach its stdin.
+
+    A pipe feeds every command in the subshell, group, loop or if statement it leads
+    into, as in `curl ... | (cd /tmp && sh)`, and such a block feeds the command it
+    pipes into, as in `... | while read l; do echo "$l"; done | sh`. Commands earlier
+    in a pipeline count even when they only pass the data on.
+    """
+    found: list[tuple[Command, list[Command]]] = []
+    blocks = [Block(None, [])]
+    command, redirect = Command(), None
+
+    def finish() -> None:
+        nonlocal command, redirect
+        if command.argv or command.heredocs or command.redirects:
+            block = blocks[-1]
+            found.append((command, block.feeders + block.earlier))
+            block.earlier.append(command)
+            for each in blocks:
+                each.inside.append(command)
+        command, redirect = Command(), None
+
+    for token in tokens:
+        value = token.value
+        first = token.kind == "word" and redirect is None and not command.argv
+        if token.kind == "word" and redirect is not None:
+            command.redirects.append((redirect, value))
+            redirect = None
+        elif (first and value in BLOCK_WORDS) or (token.kind == "op" and value == "("):
+            finish()
+            outer = blocks[-1]
+            closer = BLOCK_WORDS.get(value, ")")
+            blocks.append(Block(closer, outer.feeders + outer.earlier))
+        elif (first or token.kind == "op") and value == blocks[-1].closer:
+            finish()
+            block = blocks.pop()
+            blocks[-1].earlier.extend(block.inside)  # its output may reach a pipe
+        elif token.kind == "word":
+            command.argv.append(value)
+        elif token.kind == "redirect":
+            redirect = value
+        elif token.kind == "heredoc":
+            command.heredocs.append(value)
+            if not token.quoted:
+                command.expanded.append(value)
+        else:
+            finish()
+            # A pipe carries on. So does ;; between the arms of a case statement,
+            # which all read its stdin, and the ) after a case pattern.
+            if value not in ("|", "|&", ";;", ")"):
+                blocks[-1].earlier.clear()
+    finish()
+    return found
+
+
+def substitution_runs_stdin(text: str) -> bool:
+    """True when text holds a substitution, such as $(sh), <(sh) or >(sh), whose
+    commands run code from stdin."""
+    if not any(mark in text for mark in ("$(", "`", "<(", ">(")):
+        return False
+    scanner = Lexer(text)
+    try:
+        scanner.run()
+    except ParseError:  # here-document text, whose quotes need not pair up
+        scanner = Lexer(text)
+        try:
+            scanner.scan_expansions(text)
+        except ParseError:
+            return True
+    return any(
+        runs_stdin_code(command)
+        for tokens in scanner.nested
+        for pipeline in pipelines(tokens)
+        for command in pipeline
+    )
+
+
+def substitutes_stdin_code(command: Command) -> bool:
+    """True when a substitution in the command runs code from stdin.
+
+    `$(sh)` and `<(sh)` read the stdin the command has, `>(sh)` reads what the
+    command writes into it, and the shell fills in the substitutions of an unquoted
+    here-document before the command reads it.
+    """
+    targets = [target for _, target in command.redirects]
+    texts = [*command.argv, *targets, *command.expanded]
+    return any(substitution_runs_stdin(text) for text in texts)
+
+
 def plan_tokens(tokens: list[Token], plan: Plan, depth: int) -> None:
-    for pipeline in pipelines(tokens):
-        for position, command in enumerate(pipeline):
-            program, _ = program_of(command.argv)
-            earlier = pipeline[:position]
-            if earlier and runs_stdin_code(command):
-                if any(program_of(e.argv)[0] in DOWNLOADERS for e in earlier):
-                    plan.problems.append(
-                        "Piping a download into a shell or interpreter is blocked, "
-                        "because nothing checks what it runs. Download the file, read "
-                        "it, then decide whether to run it."
-                    )
-                if program in SHELLS:  # `echo "uv add x" | sh` runs the text it reads
-                    for feeder in earlier:
-                        plan_fed_text(feeder, plan, depth + 1)
-            plan_simple_command(command, plan, depth)
+    for command, feeders in fed_commands(tokens):
+        program, _ = program_of(command.argv)
+        piped = bool(feeders) and runs_stdin_code(command)
+        hidden = substitutes_stdin_code(command)
+        downloaded = any(program_of(f.argv)[0] in DOWNLOADERS for f in feeders)
+        if (downloaded and (piped or hidden)) or (hidden and program in DOWNLOADERS):
+            plan.problems.append(PIPE_DOWNLOAD)
+        if downloaded and not command.argv:  # `{ curl ...; } > i.sh` saves a download
+            plan.downloads |= downloaded_files("", [], command)
+        # `echo "uv add x" | sh` runs the text it reads as shell code, and so do
+        # `| source /dev/stdin`, `| eval "$(cat)"` and `| tee >(sh)`.
+        shell_code = program in SHELLS or program in ("source", ".", "eval")
+        if (piped and shell_code) or (hidden and feeders):
+            for feeder in feeders:
+                plan_fed_text(feeder, plan, depth + 1)
+        plan_simple_command(command, plan, depth)
 
 
 def plan_fed_text(command: Command, plan: Plan, depth: int) -> None:
@@ -1788,13 +2015,23 @@ def plan_command(text: str, plan: Plan, depth: int = 0) -> None:
     for nested in lexer.nested:
         plan_tokens(nested, plan, depth + 1)
     if depth == 0 and plan.scripts:  # after the whole command, so order does not matter
-        names = {os.path.basename(script) for script in plan.scripts}
-        for name in sorted(names & plan.written):
-            plan.problems.append(
-                f"This command writes {name} and runs it with `uv run`, so the check "
-                "cannot read the dependencies the script will list. Write the file in "
-                "one command and run it in the next."
-            )
+        for script in sorted(set(plan.scripts)):
+            parts = [p for p in script.split("/") if p not in ("", ".", "..")]
+            *folders, name = parts or [script]
+            if name in plan.written:
+                plan.problems.append(
+                    f"This command writes {name} and runs it with `uv run`, so the "
+                    "check cannot read the dependencies the script will list. Write "
+                    "the file in one command and run it in the next."
+                )
+            # `cp -R new/. app` or `mv new app` replaces app/tool.py too.
+            for folder in sorted(set(folders) & plan.written):
+                plan.problems.append(
+                    f"This command writes {folder} and runs {script} from it with "
+                    "`uv run`, so the check cannot be sure which dependencies the "
+                    "script will list. Write the files in one command and run the "
+                    "script in the next."
+                )
         if "*" in plan.written:
             plan.problems.append(
                 "This command changes files the check cannot name and runs a script with "
@@ -1942,7 +2179,9 @@ class Registry:
             if not isinstance(vulns, list):
                 raise CheckError("api.osv.dev sent no usable answer")
             for vuln in map(as_dict, vulns):
-                if vuln.get("withdrawn"):
+                # Only a real withdrawal time removes an advisory. A malformed value,
+                # such as "false", must not hide a malware report.
+                if parse_time(vuln.get("withdrawn")) is not None:
                     continue
                 # An ID in an unexpected format still counts, as "", but is never
                 # repeated to Claude, because whoever wrote it controls its text.
