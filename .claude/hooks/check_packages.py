@@ -67,6 +67,7 @@ HTTP_ATTEMPTS = 2
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # a few npm packages have very large metadata
 MAX_JSON_BYTES = 300 * 1024 * 1024
 MAX_SCRIPT_BYTES = 1024 * 1024
+MAX_FOLDERS = 16  # folders a command may `cd` into before the check stops following
 WORKERS = 2
 USER_AGENT = "whence-package-check/1 (+https://github.com/Aisha-Aliyu/whence)"
 # Approvals come from main on GitHub, so nothing in a session can fake one.
@@ -614,13 +615,14 @@ class Plan:
     requests: list[Request] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
     downloads: set[str] = field(default_factory=set)  # names of files it downloads
-    written: set[str] = field(default_factory=set)  # names of files it writes
-    scripts: list[str] = field(
-        default_factory=list
-    )  # scripts `uv run` reads headers of
-    # The directory the command runs in, for reading script files. None when a `cd`
-    # goes somewhere the check cannot work out, such as `cd "$DIR"`.
-    cwd: str | None = "."
+    # Names of files it writes; "*" stands for files the check cannot name.
+    written: set[str] = field(default_factory=set)
+    # Scripts whose dependency header `uv run` reads.
+    scripts: list[str] = field(default_factory=list)
+    # Every folder the command could be in, for reading script files. A `cd` may not
+    # happen (after `&&` or `||`) or may be undone (in a subshell), so earlier folders
+    # stay in the set. None when a `cd` goes somewhere the check cannot work out.
+    cwds: set[str] | None = field(default_factory=lambda: {"."})
 
 
 @dataclass
@@ -765,7 +767,12 @@ def shell_options(args: list[str]) -> tuple[bool, bool, str | None]:
     return has_c, has_s, None
 
 
-STDIN = (None, "-", "/dev/stdin")
+STDIN = (None, "-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
+
+
+def from_stdin(operand: str | None) -> bool:
+    """True when a script operand is stdin, or a process substitution that may read it."""
+    return operand in STDIN or (operand or "").startswith("<(")
 
 
 def inline_code(args: list[str]) -> list[str]:
@@ -800,15 +807,31 @@ def reads_code_from_stdin(program: str, args: list[str], depth: int = 0) -> bool
         has_c, has_s, operand = shell_options(args)
         if has_c:  # `bash -c 'source /dev/stdin'` runs stdin through its command text
             return operand is not None and text_runs_stdin(operand, depth + 1)
-        return has_s or operand in STDIN
+        return has_s or from_stdin(operand)
     if PYTHON.match(program):
         call = read_python_args(args)
-        return call.module is None and call.code is None and call.script in STDIN
+        return call.module is None and call.code is None and from_stdin(call.script)
     if program in INTERPRETERS:
-        return not inline_code(args) and script_of(program, args) in STDIN
+        return not inline_code(args) and from_stdin(script_of(program, args))
     if program == "eval":
-        return text_runs_stdin(" ".join(args), depth + 1)
-    return program in ("source", ".") and script_of(program, args) in STDIN
+        # `eval "$(cat)"` runs whatever a substitution prints, which may be stdin.
+        expands = any("$" in arg or "`" in arg for arg in args)
+        return expands or text_runs_stdin(" ".join(args), depth + 1)
+    return program in ("source", ".") and from_stdin(script_of(program, args))
+
+
+def runs_stdin_code(command: Command, depth: int = 0) -> bool:
+    """True when a command runs code from the stdin it inherits.
+
+    A command whose stdin comes from a file, a here-document or a here-string does
+    not read the stdin it inherits, so `sh < local.sh` does not count.
+    """
+    program, args = program_of(command.argv)
+    if not reads_code_from_stdin(program, args, depth):
+        return False
+    inputs = command.inputs()
+    redirected = inputs and not any(from_stdin(target) for target in inputs)
+    return not (command.heredocs or redirected)
 
 
 def text_runs_stdin(text: str, depth: int) -> bool:
@@ -826,10 +849,8 @@ def text_runs_stdin(text: str, depth: int) -> bool:
         return True
     for tokens in [lexer.tokens, *lexer.nested]:
         for pipeline in pipelines(tokens):
-            for command in pipeline:
-                program, args = program_of(command.argv)
-                if reads_code_from_stdin(program, args, depth):
-                    return True
+            if any(runs_stdin_code(command, depth) for command in pipeline):
+                return True
     return False
 
 
@@ -888,17 +909,70 @@ def downloaded_files(program: str, args: list[str], command: Command) -> set[str
     return {os.path.basename(name) for name in names if name and name != "-"}
 
 
+# git subcommands that change files in the working tree.
+GIT_WRITES = words(
+    "checkout switch restore reset stash apply am pull merge rebase cherry-pick revert mv"
+)
+
+
+def target_directory(args: list[str]) -> str | None:
+    """The folder given to cp, mv, ln or install with -t or --target-directory."""
+    for i, arg in enumerate(args):
+        if arg in ("-t", "--target-directory"):
+            return args[i + 1] if i + 1 < len(args) else ""
+        if arg.startswith("--target-directory="):
+            return arg.partition("=")[2]
+        if arg.startswith("-t") and len(arg) > 2 and not arg.startswith("--"):
+            return arg[2:]
+    return None
+
+
 def written_files(program: str, args: list[str], command: Command) -> set[str]:
-    """The names of files a command writes: redirects, tee, cp, mv, sed -i and similar.
+    """The names of files a command writes, or "*" when it may write files the check
+    cannot name, such as `git checkout` or a redirect to "$FILE".
 
     Only names are kept, so a file with the same name in another folder counts too.
     """
-    names = {t for op, t in command.redirects if op in (">", ">>", ">|", "&>", "&>>")}
+    names = {
+        t for op, t in command.redirects if op in (">", ">>", ">|", "&>", "&>>", "<>")
+    }
+    operands = [arg for arg in args if not arg.startswith("-")]
     in_place = any(arg.startswith(("-i", "--in-place")) for arg in args)
-    copies = program in ("tee", "cp", "mv", "ln", "install", "rsync")
-    if copies or (program in ("sed", "perl") and in_place):
-        names |= {arg for arg in args if not arg.startswith("-")}
-    return {os.path.basename(name) for name in names if name and name != "-"}
+    if program == "tee" or (program in ("sed", "perl") and in_place):
+        names |= set(operands)
+    elif program == "dd":
+        names |= {arg[3:] for arg in args if arg.startswith("of=")}
+    elif program in ("cp", "mv", "ln", "install", "rsync") and operands:
+        folder = target_directory(args)
+        if folder is not None:
+            names |= set(operands) - {folder}
+        else:
+            *sources, destination = operands
+            names.add(destination)
+            last = os.path.basename(destination.rstrip("/"))
+            # Copying into a folder keeps each source's name. A destination without a
+            # dot in its name, such as `.` or `backup`, is taken to be a folder.
+            into_folder = destination.endswith("/") or "." not in last.strip(".")
+            if into_folder or len(sources) > 1:
+                names |= set(sources)
+    elif program in ("patch", "unzip") or (program == "git" and git_writes(args)):
+        names.add("*")
+    elif program == "tar" and any(
+        arg in ("--extract", "--get") or re.fullmatch(r"-?[A-Za-z]*x[A-Za-z]*", arg)
+        for arg in args
+    ):
+        names.add("*")  # `tar xzf a.tgz` can overwrite any file
+    names = {"*" if "$" in name or "`" in name else name for name in names}
+    return {
+        os.path.basename(name.rstrip("/")) for name in names if name and name != "-"
+    }
+
+
+def git_writes(args: list[str]) -> bool:
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in ("-C", "-c") else 1
+    return i < len(args) and args[i] in GIT_WRITES
 
 
 def command_string(args: list[str]) -> str | None:
@@ -1174,18 +1248,37 @@ def inline_script_requests(path: str, plan: Plan, directory: str = ".") -> None:
     """
     plan.scripts.append(path)
     location = os.path.join(directory, path)
-    try:
-        if plan.cwd is None and not os.path.isabs(location):
-            raise OSError("the command changes to a directory the check cannot follow")
-        with open(os.path.join(plan.cwd or "", location), "rb") as handle:
-            text = handle.read(MAX_SCRIPT_BYTES + 1).decode("utf-8", "replace")
-    except OSError:
+    if os.path.isabs(location):
+        candidates = [location]
+    else:  # every folder the command could be in when uv runs
+        candidates = sorted(os.path.join(d, location) for d in plan.cwds or ())
+    texts: list[str] = []
+    for candidate in candidates:
+        try:
+            with open(candidate, "rb") as handle:
+                data = handle.read(MAX_SCRIPT_BYTES + 1)
+        except OSError:
+            continue
+        if len(data) > MAX_SCRIPT_BYTES:
+            plan.problems.append(
+                f"{path} is larger than the {MAX_SCRIPT_BYTES // (1024 * 1024)} MB the "
+                "check reads, so it cannot see all of the script's dependency header."
+            )
+            return
+        texts.append(data.decode("utf-8", "replace"))
+    if not texts:
         plan.problems.append(
             f"The check could not read {path} before the command runs, so it cannot vet "
             "the dependencies the script lists. Create the script first, then run it "
             "with `uv run` in a separate command."
         )
         return
+    for text in texts:
+        script_header_requests(text, path, plan)
+
+
+def script_header_requests(text: str, path: str, plan: Plan) -> None:
+    """Check the dependencies a script lists in its PEP 723 header."""
     match = SCRIPT_METADATA.search(text)
     if match is None:
         return
@@ -1458,7 +1551,8 @@ def plan_xargs(args: list[str], plan: Plan, depth: int) -> None:
         probe = [word.replace(replace, XARGS_INPUT) for word in command]
     else:
         probe = [*command, XARGS_INPUT]
-    trial = Plan(downloads=set(plan.downloads), written=plan.written, cwd=plan.cwd)
+    folders = None if plan.cwds is None else set(plan.cwds)
+    trial = Plan(downloads=set(plan.downloads), written=plan.written, cwds=folders)
     plan_simple_command(Command(probe), trial, depth + 1)
     from_stdin = any(XARGS_INPUT in r.name for r in trial.requests) or any(
         XARGS_INPUT in p for p in trial.problems
@@ -1623,10 +1717,13 @@ def plan_simple_command(command: Command, plan: Plan, depth: int) -> None:
         targets = [arg for arg in args if not arg.startswith("-") or arg == "-"]
         target = targets[0] if targets else "~"
         unknown = program == "popd" or target == "-" or "$" in target or "`" in target
-        if unknown or (program == "pushd" and not targets):
-            plan.cwd = None
-        elif plan.cwd is not None:
-            plan.cwd = os.path.join(plan.cwd, os.path.expanduser(target))
+        if unknown or (program == "pushd" and not targets) or plan.cwds is None:
+            plan.cwds = None
+        else:
+            moved = {os.path.join(d, os.path.expanduser(target)) for d in plan.cwds}
+            plan.cwds |= moved
+            if len(plan.cwds) > MAX_FOLDERS:
+                plan.cwds = None
         return
     plan_program(program, args, command, plan, depth)
     if depth >= MAX_NESTING:
@@ -1648,9 +1745,9 @@ def plan_simple_command(command: Command, plan: Plan, depth: int) -> None:
 def plan_tokens(tokens: list[Token], plan: Plan, depth: int) -> None:
     for pipeline in pipelines(tokens):
         for position, command in enumerate(pipeline):
-            program, args = program_of(command.argv)
+            program, _ = program_of(command.argv)
             earlier = pipeline[:position]
-            if earlier and reads_code_from_stdin(program, args):
+            if earlier and runs_stdin_code(command):
                 if any(program_of(e.argv)[0] in DOWNLOADERS for e in earlier):
                     plan.problems.append(
                         "Piping a download into a shell or interpreter is blocked, "
@@ -1690,12 +1787,19 @@ def plan_command(text: str, plan: Plan, depth: int = 0) -> None:
     plan_tokens(lexer.tokens, plan, depth)
     for nested in lexer.nested:
         plan_tokens(nested, plan, depth + 1)
-    if depth == 0:  # after the whole command is read, so the order does not matter
-        for name in sorted({os.path.basename(s) for s in plan.scripts} & plan.written):
+    if depth == 0 and plan.scripts:  # after the whole command, so order does not matter
+        names = {os.path.basename(script) for script in plan.scripts}
+        for name in sorted(names & plan.written):
             plan.problems.append(
                 f"This command writes {name} and runs it with `uv run`, so the check "
                 "cannot read the dependencies the script will list. Write the file in "
                 "one command and run it in the next."
+            )
+        if "*" in plan.written:
+            plan.problems.append(
+                "This command changes files the check cannot name and runs a script with "
+                "`uv run`, so the check cannot be sure which dependencies the script will "
+                "list. Run the script in a separate command."
             )
 
 
@@ -1834,7 +1938,10 @@ class Registry:
             # other body means the check could not finish.
             if not isinstance(answer, dict):
                 raise CheckError("api.osv.dev sent no usable answer")
-            for vuln in map(as_dict, as_list(answer.get("vulns"))):
+            vulns = answer.get("vulns", [])
+            if not isinstance(vulns, list):
+                raise CheckError("api.osv.dev sent no usable answer")
+            for vuln in map(as_dict, vulns):
                 if vuln.get("withdrawn"):
                     continue
                 # An ID in an unexpected format still counts, as "", but is never
@@ -2152,7 +2259,7 @@ def evaluate(
     cloud: bool = False,
     cwd: str = ".",
 ) -> Outcome:
-    plan = Plan(cwd=cwd)
+    plan = Plan(cwds={cwd})
     try:
         plan_command(command, plan)
     except Exception as error:  # noqa: BLE001 - a reader bug must not stop ordinary commands

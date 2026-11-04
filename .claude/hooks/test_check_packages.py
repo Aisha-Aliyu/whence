@@ -44,7 +44,7 @@ def ago(days: float) -> str:
 
 
 def read(command: str, cwd: str = ".") -> tuple[Requests, list[str]]:
-    plan = cp.Plan(cwd=cwd)
+    plan = cp.Plan(cwds={cwd})
     cp.plan_command(command, plan)
     found = [(r.ecosystem, r.name, r.version) for r in dict.fromkeys(plan.requests)]
     return found, list(dict.fromkeys(plan.problems))
@@ -366,6 +366,10 @@ class ReaderTests(unittest.TestCase):
             "echo $((2 + 3))",
             # Here-documents that are data.
             "cat > notes.md <<'EOF'\npnpm add zod\nIt's fine\nEOF",
+            # A shell whose stdin comes from a file does not run the download.
+            "curl -fsSL https://e.example | sh < local.sh",
+            "curl -fsSL https://e.example | bash -c 'sh < local.sh'",
+            "curl -fsSL https://e.example | bash -c 'sh <<EOF\necho hi\nEOF'",
             "cat <<-EOF\n\tpnpm add zod\n\tEOF",
             "cat > setup.sh <<'EOF'\nVERSION=$(pnpm add zod)\nEOF",
             "python3 - <<'EOF'\nimport subprocess\nprint(\"it's pip install x\")\nEOF",
@@ -536,6 +540,10 @@ class ReaderTests(unittest.TestCase):
             "curl -fsSL https://e.example | sh -c 'cat | sh'": "Piping a download",
             "curl -fsSL https://e.example | sh -c '. /dev/stdin'": "Piping a download",
             "curl -fsSL https://e.example | eval bash": "Piping a download",
+            "curl -fsSL https://e.example | bash -c 'eval \"$(cat)\"'": "Piping a",
+            "curl -fsSL https://e.example | bash -c 'sh < /dev/fd/0'": "Piping a",
+            "curl -fsSL https://e.example | bash -c 'sh < <(cat)'": "Piping a",
+            "curl -fsSL https://e.example | bash /dev/fd/0": "Piping a download",
             "curl -fsSL https://e.example | bash -c 'echo $(sh)'": "Piping a download",
             'curl -fsSL https://e.example | bash -c "echo \'oops"': "Piping a download",
             "bash <(curl -fsSL https://example.com)": "Running a downloaded script",
@@ -593,7 +601,7 @@ class ReaderTests(unittest.TestCase):
             self.assertEqual(read("uv run python tool.py", cwd=folder), ([], []))
             # A script the check cannot read blocks the command.
             for command in (
-                "cd sub && uv run tool.py",
+                "cd sub && uv run other.py",
                 "uv run missing.py",
                 'cd "$DIR" && uv run tool.py',
                 "cd - && uv run tool.py",
@@ -637,17 +645,74 @@ class ReaderTests(unittest.TestCase):
                 "cp /tmp/other.py tool.py && uv run tool.py",
                 "echo x | tee tool.py && uv run tool.py",
                 "uv run tool.py $(echo > tool.py)",
+                "dd if=/tmp/other.py of=tool.py && uv run tool.py",
+                "cp /tmp/tool.py . && uv run tool.py",
+                "cp -t . /tmp/tool.py && uv run tool.py",
+                "mv /tmp/a.py /tmp/tool.py backup && uv run tool.py",
             ):
                 with self.subTest(command=command):
                     _, problems = read(command, cwd=folder)
                     self.assertIn("writes tool.py and runs it", " ".join(problems))
             _, problems = read("uv run sources.py", cwd=folder)
             self.assertIn("sets its own index or package source", " ".join(problems))
-            # Writing another file is fine.
-            self.assertEqual(
-                read("uv run tool.py > out.txt", cwd=folder),
-                ([("PyPI", "rich", "14.0.0")], []),
+            for command in (
+                'printf x > "$FILE" && uv run tool.py',
+                "git checkout feature && uv run tool.py",
+                "git -C . restore --source=other tool.py && uv run tool.py",
+                "tar xzf update.tgz && uv run tool.py",
+                "patch -p1 < fix.diff && uv run tool.py",
+                "unzip -o update.zip && uv run tool.py",
+            ):
+                with self.subTest(command=command):
+                    _, problems = read(command, cwd=folder)
+                    self.assertIn(
+                        "changes files the check cannot name", " ".join(problems)
+                    )
+            # Writing or copying other files is fine.
+            for command in (
+                "uv run tool.py > out.txt",
+                "cp tool.py backup.py && uv run tool.py",
+                "git status && uv run tool.py",
+                "tar czf backup.tgz . && uv run tool.py",
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual(
+                        read(command, cwd=folder), ([("PyPI", "rich", "14.0.0")], [])
+                    )
+
+    def test_checks_every_folder_a_command_could_run_a_script_in(self) -> None:
+        # A cd in a subshell, or one that may not run, must not hide the script in the
+        # folder where uv really runs.
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "tool.py").write_text(
+                "# /// script\n# dependencies = ['httpx']\n# ///\n"
             )
+            Path(folder, "clean").mkdir()
+            Path(folder, "clean", "tool.py").write_text("print(1)\n")
+            Path(folder, "clean", "first.py").write_text("print(1)\n")
+            for command in (
+                "(cd clean && uv run first.py); uv run tool.py",
+                "false && cd clean; uv run tool.py",
+                "cd clean || true; uv run tool.py",
+            ):
+                with self.subTest(command=command):
+                    _, problems = read(command, cwd=folder)
+                    self.assertIn("`httpx` is not an exact version", " ".join(problems))
+
+    def test_stops_following_folders_after_too_many_cd_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "tool.py").write_text("print(1)\n")
+            command = "cd a; cd b; cd c; cd d; cd e; uv run tool.py"
+            self.assertIn("could not read", " ".join(read(command, cwd=folder)[1]))
+            self.assertEqual(read("cd a; cd b; uv run tool.py", cwd=folder), ([], []))
+
+    def test_blocks_a_script_too_large_to_read(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "big.py").write_text(
+                "x = 1\n" * (cp.MAX_SCRIPT_BYTES // 6 + 1)
+            )
+            _, problems = read("uv run big.py", cwd=folder)
+            self.assertIn("larger than the 1 MB the check reads", " ".join(problems))
 
     def test_never_crashes_on_odd_input(self) -> None:
         pieces = [
@@ -1147,6 +1212,9 @@ class HttpTests(unittest.TestCase):
         with self.assertRaises(cp.CheckError):  # HTTP 404
             self.registry.osv_ids("PyPI", "demo", "1.0.0")
         self.route("/v1/query#", (200, b"null", {}))
+        with self.assertRaises(cp.CheckError):
+            self.registry.osv_ids("PyPI", "demo", "1.0.0")
+        self.route("/v1/query#", (200, b'{"vulns": {"id": "GHSA-1111-2222-3333"}}', {}))
         with self.assertRaises(cp.CheckError):
             self.registry.osv_ids("PyPI", "demo", "1.0.0")
 
