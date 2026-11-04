@@ -17,8 +17,9 @@ These folders do not exist yet. Each arrives in its own pull request, so do not 
 
 ## Commands
 
-- Package check tests: `python3 -m unittest discover --start-directory .claude/hooks --verbose`
-- Package check lint and types: `uvx ruff@0.16.9 check .claude/hooks`, `uvx ruff@0.16.9 format --check .claude/hooks` and `uvx mypy@2.3.1 --strict .claude/hooks`
+- Hook tests: `python3 -m unittest discover --start-directory .claude/hooks --verbose`
+- Hook lint and types: `uvx ruff@0.16.9 check .claude/hooks`, `uvx ruff@0.16.9 format --check .claude/hooks` and `uvx mypy@2.3.1 --strict .claude/hooks`
+- Independent review: ask Claude Code to "use the reviewer agent to review this branch" (`.claude/agents/reviewer.md`)
 
 Every pull request that adds tooling also adds its commands to this section.
 
