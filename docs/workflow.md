@@ -67,7 +67,7 @@ Claude Code runs [.claude/hooks/check_packages.py](../.claude/hooks/check_packag
 3. [OSV](https://osv.dev), the open vulnerability database, which also collects malware reports, lists nothing against that version.
 4. The version is not yanked on PyPI or deprecated on npm.
 
-The hook also enforces how we install: Python packages with `uv add`, JavaScript packages with `pnpm add`, one-off tools with `uvx` and `pnpm dlx`, and nothing from a URL, a git repository, a local path, a custom index or a requirements file. Piping a download into a shell is blocked. Installs from the reviewed lockfiles (`uv sync`, `pnpm install`) run without checks.
+The hook also enforces how we install: Python packages with `uv add`, JavaScript packages with `pnpm add`, one-off tools with `uvx` and `pnpm dlx`, and nothing from a URL, a git repository, a local path, a requirements file, or another index or registry, whether an option or an environment variable sets it. Bulk upgrades such as `pnpm update` and `uv lock --upgrade` are blocked, because Dependabot proposes upgrades in reviewed pull requests. Running a downloaded script is blocked, whether it is piped into a shell or run later in the same command. Installs from the reviewed lockfiles (`uv sync`, `pnpm install`) run without checks.
 
 When every package passes, Claude receives each package's link and age, plus the latest version when an older one was pinned. When anything fails, the command does not run, and Claude receives the reason, the links and, for a version that is too new, an older version that passes. If a check cannot finish, for example because a registry is down, the command is blocked. Claude Code lets a hook that times out pass, so the script stops itself after 60 seconds and blocks.
 
@@ -88,6 +88,7 @@ The hook needs `pypi.org`, `registry.npmjs.org` and `api.osv.dev`. Codespaces re
 ### What it cannot do
 
 - It reads commands, so it cannot see installs that a script, a Makefile or a program performs, or a command disguised on purpose.
+- Settings stored in files, such as `.npmrc`, `uv.toml` or the `[tool.uv]` table in `pyproject.toml`, can also point installs at another index. The hook does not read those files, so pull request review is what catches a change to them.
 - It checks the packages a command names, not their dependencies. The lockfile review in each pull request, the dependency review check, Dependabot's 7-day cooldown, and the package managers' own cooldowns (uv's `exclude-newer` from Day 4, pnpm's `minimumReleaseAge` from Day 14) cover those.
 - Claude Code reloads its settings when the file changes, so a session that edits `.claude/` could switch the check off. CLAUDE.md forbids editing `.claude/` unless the task asks for it, and CodeRabbit flags every change there. The hook guards against mistakes; the hard limits are the cloud environment's network allowlist and branch protection.
 

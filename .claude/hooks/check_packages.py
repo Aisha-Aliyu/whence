@@ -16,8 +16,10 @@ these checks:
 
 It also enforces the project's install rules: Python packages come from PyPI through
 uv, JavaScript packages come from npm through pnpm, and nothing installs from a URL,
-a git repository, a local path, a custom index or a requirements file. Piping a
-download into a shell is blocked too.
+a git repository, a local path, a requirements file, or another index or registry
+set by an option or an environment variable. Bulk upgrades are blocked, because
+Dependabot proposes upgrades in reviewed pull requests. Running a downloaded script,
+by a pipe or in the same command that downloads it, is blocked too.
 
 Exit code 0 lets the command run. Exit code 2 blocks it, and the message on stderr
 tells Claude why. If a check cannot finish, for example because a registry is
@@ -109,6 +111,20 @@ WRAPPER_VALUE_FLAGS = {
     "stdbuf": words("-i -o -e --input --output --error"),
     "exec": words("-a"),
 }
+# Programs that run a command handed to them as one string, as in `su -c "..."`.
+COMMAND_STRING_RUNNERS = words("su runuser flock script")
+
+# Settings that send installs to another index or registry, or turn off certificate
+# checks. They are blocked as options (--index-url, --registry, --config.registry)
+# and as environment variables (UV_INDEX_URL, npm_config_registry).
+RISKY_SETTING = re.compile(
+    r"index|registry|find.links|config.file|userconfig|globalconfig|insecure|"
+    r"trusted.host|strict.ssl|cafile|tls.reject",
+    re.IGNORECASE,
+)
+PACKAGE_TOOL_VARIABLE = re.compile(
+    r"^(uv|pip|npm_config|pnpm_config|yarn|node)_", re.IGNORECASE
+)
 
 # Package tools this project does not use. Installs through them would skip the check.
 UNUSED_PYTHON_TOOLS = words("pipx poetry pipenv pdm conda mamba micromamba pixi")
@@ -118,7 +134,7 @@ INSTALL_TOOLS = (
 )
 INSTALL_WORD = re.compile(
     r"\b(pip3?|uvx?|pipx|npm|npx|pnpm|pnpx|yarn|bunx?|deno|poetry|pipenv|pdm|conda|"
-    r"mamba|curl|wget)\b"
+    r"mamba|corepack|curl|wget)\b"
 )
 PYTHON_WAY = (
     "Add Python packages with `uv add <name>==<version>`, run the project's own tools "
@@ -129,7 +145,16 @@ JS_WAY = (
     "tools with `pnpm exec <tool>`, and run one-off tools with "
     "`pnpm dlx <name>@<version>`."
 )
+BULK_UPGRADE = (
+    "upgrades packages without the check. Change one package at a time to an exact "
+    "version (`uv add <name>==<version>` or `pnpm add <name>@<version>`); Dependabot "
+    "proposes routine upgrades in reviewed pull requests."
+)
 
+PIP_VERBS = words(
+    "install download uninstall freeze inspect list show check config search cache "
+    "index wheel hash completion debug help lock"
+)
 PIP_VALUE_FLAGS = words(
     "--python --log --proxy --retries --timeout --exists-action --trusted-host --cert "
     "--client-cert --cache-dir --use-feature --use-deprecated --progress-bar "
@@ -137,42 +162,75 @@ PIP_VALUE_FLAGS = words(
 )
 NPM_INSTALL_VERBS = words(
     "install i in ins inst insta instal isnt isnta isntal isntall add ci clean-install "
-    "ic install-clean isntall-clean install-test it install-ci-test cit update up "
-    "upgrade udpate exec x create init innit"
+    "ic install-clean isntall-clean install-test it install-ci-test cit sit "
+    "clean-install-test update up upgrade udpate exec x create init innit link ln "
+    "dedupe ddp"
+)
+NPM_VERBS = NPM_INSTALL_VERBS | words(
+    "run run-script rum urn test t tst start stop restart view v info show search s "
+    "se find help config c get set ls list ll la outdated audit doctor version whoami "
+    "ping pkg explain why query fund repo docs home bugs root prefix bin cache token "
+    "profile org team access owner deprecate dist-tag publish unpublish login logout "
+    "adduser pack diff edit explore prune rebuild rb sbom star stars unstar completion"
 )
 NPM_VALUE_FLAGS = words(
     "--prefix -w --workspace --userconfig --globalconfig --cache --loglevel --registry "
-    "--tag --omit --include --before --location"
+    "--tag --omit --include --before --location --install-strategy"
 )
-UV_GLOBAL_VALUE_FLAGS = words(
-    "--directory --project --cache-dir --config-file --color --python-preference"
+
+UV_SUBCOMMANDS = words(
+    "add remove sync lock export tree tool python pip venv build publish cache self "
+    "version run init help format auth"
 )
-UV_VALUE_FLAGS = UV_GLOBAL_VALUE_FLAGS | words(
+UV_VALUE_FLAGS = words(
+    "--directory --project --cache-dir --config-file --color --python-preference "
     "--group --optional --extra --package --script --bounds --marker -m --python -p "
     "--config-setting -C --exclude-newer --exclude-newer-package --upgrade-package -P "
     "--refresh-package --reinstall-package --no-build-isolation-package "
     "--no-build-package --no-binary-package --link-mode --resolution --prerelease "
     "--keyring-provider --index-strategy --fork-strategy --python-platform --rev --tag "
-    "--branch --torch-backend --env-file --from --with --with-executables-from"
+    "--branch --torch-backend --env-file --from --with --with-executables-from "
+    "--only-group --no-group --no-extra --preview-features --allow-insecure-host"
+)
+UV_BOOL_FLAGS = words(
+    "--dev --frozen --locked --no-sync --isolated --active --no-dev --all-extras "
+    "--all-packages --all-groups --no-project --module --quiet --verbose --offline "
+    "--no-cache --native-tls --no-config --no-progress --preview --exact --inexact "
+    "--compile-bytecode --no-editable --refresh --reinstall --no-build --no-binary "
+    "--no-build-isolation --managed-python --no-managed-python --no-python-downloads "
+    "--no-env-file --raw --raw-sources --workspace --no-workspace --seed -q -v -n"
 )
 UV_RUN_VALUE_FLAGS = UV_VALUE_FLAGS - {"-m"}  # `uv run -m pytest` runs a module
-# Options that install from a file, a URL, another index or a local path.
-UV_BLOCKED_FLAGS = words(
+# Options that install from a file or a local path. Index options are risky settings.
+UV_FILE_FLAGS = words(
     "-r --requirements --requirement -c --constraints --constraint --overrides "
-    "--override --build-constraints --build-constraint -e --editable -i --index-url "
-    "--extra-index-url --index --default-index -f --find-links --allow-insecure-host "
-    "--trusted-host --with-requirements --with-editable"
+    "--override --build-constraints --build-constraint -e --editable -i -f "
+    "--with-requirements --with-editable"
 )
-PNPM_GLOBAL_VALUE_FLAGS = words(
+UV_UPGRADE_FLAGS = words("-U --upgrade -P --upgrade-package")
+
+PNPM_VERBS = words(
+    "add install i update up upgrade dlx create exec run test t start stop restart "
+    "remove rm uninstall un link ln unlink import rebuild rb prune fetch install-test "
+    "it patch patch-commit patch-remove audit list ls why outdated licenses root bin "
+    "store env setup init deploy pack publish server config c get set cache "
+    "self-update doctor approve-builds ignored-builds help recursive multi m"
+)
+PNPM_VALUE_FLAGS = words(
     "--filter -F --filter-prod -C --dir --reporter --loglevel --workspace-concurrency "
-    "--test-pattern --changed-files-ignore-pattern --package"
+    "--test-pattern --changed-files-ignore-pattern --package --virtual-store-dir "
+    "--store-dir --modules-dir --lockfile-dir --global-dir --global-bin-dir "
+    "--cache-dir --state-dir --network-concurrency --child-concurrency "
+    "--resolution-mode --package-import-method --resume-from --allow-build"
 )
-PNPM_VALUE_FLAGS = PNPM_GLOBAL_VALUE_FLAGS | words(
-    "--virtual-store-dir --store-dir --modules-dir --lockfile-dir --global-dir "
-    "--global-bin-dir --cache-dir --state-dir --network-concurrency "
-    "--child-concurrency --resolution-mode --package-import-method"
+PNPM_BOOL_FLAGS = words(
+    "--save-dev --save-prod --save-optional --save-exact --save-peer --save-catalog "
+    "--global --workspace --workspace-root --recursive --ignore-scripts --offline "
+    "--prefer-offline --frozen-lockfile --no-frozen-lockfile --lockfile-only --silent "
+    "--stream --aggregate-output --color --no-color --use-stderr --fix-lockfile "
+    "--ignore-workspace --shamefully-hoist --strict-peer-dependencies --no-optional "
+    "--prod --dev --shell-mode --latest -D -P -O -E -g -w -r -s -c -L"
 )
-PNPM_BLOCKED_FLAGS = words("--registry")
 
 NPM_NAME = re.compile(
     r"^(?:@[A-Za-z0-9][A-Za-z0-9._~-]*/)?[A-Za-z0-9][A-Za-z0-9._~-]*$"
@@ -525,37 +583,44 @@ class Plan:
 
     requests: list[Request] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+    downloads: set[str] = field(default_factory=set)  # names of files it downloads
 
 
 @dataclass
 class Command:
     argv: list[str] = field(default_factory=list)
     heredocs: list[str] = field(default_factory=list)
+    redirects: list[tuple[str, str]] = field(default_factory=list)  # (operator, target)
+
+    def inputs(self) -> list[str]:
+        """What arrives on stdin through < and <<< (here-documents are separate)."""
+        return [target for op, target in self.redirects if op in ("<", "<<<", "<>")]
 
 
 def pipelines(tokens: list[Token]) -> list[list[Command]]:
-    """Group tokens into pipelines of simple commands. Redirect targets are dropped."""
+    """Group tokens into pipelines of simple commands."""
     result: list[list[Command]] = []
     pipeline: list[Command] = []
     command = Command()
-    skip_target = False
+    redirect: str | None = None
     for token in tokens:
         if token.kind == "word":
-            if skip_target:
-                skip_target = False
-            else:
+            if redirect is None:
                 command.argv.append(token.value)
+            else:
+                command.redirects.append((redirect, token.value))
+                redirect = None
         elif token.kind == "redirect":
-            skip_target = True
+            redirect = token.value
         elif token.kind == "heredoc":
             command.heredocs.append(token.value)
         elif token.value in ("|", "|&"):
             pipeline.append(command)
-            command, skip_target = Command(), False
+            command, redirect = Command(), None
         else:
             pipeline.append(command)
             result.append(pipeline)
-            pipeline, command, skip_target = [], Command(), False
+            pipeline, command, redirect = [], Command(), None
     pipeline.append(command)
     result.append(pipeline)
     cleaned = [[c for c in p if c.argv or c.heredocs] for p in result]
@@ -576,10 +641,16 @@ def strip_wrappers(argv: list[str]) -> list[str]:
         value_flags = WRAPPER_VALUE_FLAGS.get(name, frozenset())
         i += 1
         while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
-            if argv[i] == "--":
+            flag, eq, inline = argv[i].partition("=")
+            if flag == "--":
                 i += 1
                 break
-            i += 2 if argv[i] in value_flags else 1
+            if name == "env" and flag in ("-S", "--split-string"):
+                value = inline if eq else (argv[i + 1] if i + 1 < len(argv) else "")
+                return strip_wrappers(split_words(value) + argv[i + (1 if eq else 2) :])
+            i += 2 if flag in value_flags and not eq else 1
+        while name == "env" and i < len(argv) and "=" in argv[i]:
+            i += 1  # env takes NAME=value pairs before the command
         if name == "timeout" and i < len(argv):
             i += 1  # the duration
     return argv[i:]
@@ -592,13 +663,15 @@ def program_of(argv: list[str]) -> tuple[str, list[str]]:
     return os.path.basename(stripped[0]), stripped[1:]
 
 
-def python_module(args: list[str]) -> tuple[str, list[str]] | None:
-    """For `python -m pip install x`, return ("pip", ["install", "x"])."""
+def python_options(args: list[str]) -> tuple[str | None, str | None, bool]:
+    """Read python's options. Return (module after -m, script path, has -c)."""
     i = 0
     while i < len(args):
         arg = args[i]
-        if not arg.startswith("-") or arg in ("-", "--"):
-            return None
+        if not arg.startswith("-") or arg == "-":
+            return None, arg, False
+        if arg == "--":
+            return None, (args[i + 1] if i + 1 < len(args) else None), False
         if arg.startswith("--"):
             i += 1
             continue
@@ -606,41 +679,27 @@ def python_module(args: list[str]) -> tuple[str, list[str]] | None:
         for k, letter in enumerate(letters):
             rest = letters[k + 1 :]
             if letter == "c":
-                return None
+                return None, None, True
             if letter == "m":
-                if rest:
-                    return rest, args[i + 1 :]
-                return (args[i + 1], args[i + 2 :]) if i + 1 < len(args) else None
+                module = rest or (args[i + 1] if i + 1 < len(args) else None)
+                return module, None, False
             if letter in "XW":  # options that take a value
                 i += 1 if rest else 2
                 break
         else:
             i += 1
+    return None, None, False
+
+
+def python_module(args: list[str]) -> tuple[str, list[str]] | None:
+    """For `python -m pip install x`, return ("pip", ["install", "x"])."""
+    module, _, _ = python_options(args)
+    if module is None:
+        return None
+    for i, arg in enumerate(args):
+        if arg == module or arg.endswith(f"m{module}"):
+            return module, args[i + 1 :]
     return None
-
-
-def python_reads_stdin(args: list[str]) -> bool:
-    """True when python would run the program that arrives on stdin."""
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg in ("-", "/dev/stdin"):
-            return True
-        if not arg.startswith("-"):
-            return False  # a script file
-        if arg.startswith("--"):
-            i += 1
-            continue
-        letters = arg[1:]
-        for k, letter in enumerate(letters):
-            if letter in "cm":
-                return False  # inline code or a module
-            if letter in "XW":
-                i += 1 if letters[k + 1 :] else 2
-                break
-        else:
-            i += 1
-    return True
 
 
 def shell_options(args: list[str]) -> tuple[bool, bool, str | None]:
@@ -664,24 +723,104 @@ def shell_options(args: list[str]) -> tuple[bool, bool, str | None]:
     return has_c, has_s, None
 
 
+STDIN = (None, "-", "/dev/stdin")
+
+
+def script_of(program: str, args: list[str]) -> str | None:
+    """The script file a shell or interpreter runs, if it runs one."""
+    if program in SHELLS:
+        has_c, _, operand = shell_options(args)
+        return None if has_c else operand
+    if PYTHON.match(program):
+        return python_options(args)[1]
+    if program in INTERPRETERS:
+        if any(arg.partition("=")[0] in INLINE_CODE_FLAGS for arg in args):
+            return None
+        return next(
+            (arg for arg in args if not arg.startswith("-") or arg == "-"), None
+        )
+    if program in ("source", "."):
+        return args[0] if args else None
+    return None
+
+
 def reads_code_from_stdin(program: str, args: list[str]) -> bool:
     """True when a shell or interpreter would run whatever arrives on stdin."""
     if program in SHELLS:
         has_c, has_s, operand = shell_options(args)
-        return not has_c and (has_s or operand in (None, "-", "/dev/stdin"))
+        return not has_c and (has_s or operand in STDIN)
     if PYTHON.match(program):
-        return python_reads_stdin(args)
+        module, script, has_c = python_options(args)
+        return not has_c and module is None and script in STDIN
     if program in INTERPRETERS:
-        if any(arg.partition("=")[0] in INLINE_CODE_FLAGS for arg in args):
-            return False
-        operands = [arg for arg in args if not arg.startswith("-") or arg == "-"]
-        return not operands or operands[0] in ("-", "/dev/stdin")
+        inline = any(arg.partition("=")[0] in INLINE_CODE_FLAGS for arg in args)
+        return not inline and script_of(program, args) in STDIN
     return False
 
 
-def starts_install_tool(argv: list[str], j: int) -> bool:
+def downloaded_files(program: str, args: list[str], command: Command) -> set[str]:
+    """The names of the files a curl or wget command saves."""
+    names = {t for op, t in command.redirects if op in (">", ">>", ">|", "&>", "&>>")}
+    letter, long_flag = (
+        ("o", "--output") if program == "curl" else ("O", "--output-document")
+    )
+    remote = program == "wget"  # wget names the file after the URL unless -O is given
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        following = args[i + 1] if i + 1 < len(args) else ""
+        if arg == long_flag or arg.startswith(f"{long_flag}="):
+            names.add(arg.partition("=")[2] if "=" in arg else following)
+            remote = False
+            i += 1 if "=" in arg else 2
+            continue
+        if arg.startswith("-") and not arg.startswith("--") and letter in arg[1:]:
+            rest = arg[arg.index(letter, 1) + 1 :]  # -o file, -ofile, -sSLo file, -qO-
+            names.add(rest or following)
+            remote = False
+            i += 1 if rest else 2
+            continue
+        short_remote = arg.startswith("-") and not arg.startswith("--") and "O" in arg
+        if program == "curl" and (
+            short_remote or arg in ("--remote-name", "--remote-name-all")
+        ):
+            remote = True
+        i += 1
+    if remote:
+        names |= {
+            urllib.parse.urlsplit(a).path.rpartition("/")[2] for a in args if "://" in a
+        }
+    return {os.path.basename(name) for name in names if name and name != "-"}
+
+
+def command_string(args: list[str]) -> str | None:
+    """The command text after -c or --command, as in `su -c "uv add x"`."""
+    for i, arg in enumerate(args):
+        following = args[i + 1] if i + 1 < len(args) else None
+        if arg == "--command":
+            return following
+        if arg.startswith("--command="):
+            return arg.partition("=")[2]
+        if arg.startswith("-") and not arg.startswith("--") and "c" in arg[1:]:
+            return arg[arg.index("c", 1) + 1 :] or following
+    return None
+
+
+def watch_command(args: list[str]) -> list[str]:
+    """`watch -n 5 "pnpm add zod"` runs its arguments through sh -c."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        if args[i] in ("-x", "--exec"):
+            return []  # the arguments run directly, and the general scan finds them
+        i += 2 if args[i] in ("-n", "--interval") else 1
+    return args[i:]
+
+
+def starts_nested_command(argv: list[str], j: int) -> bool:
+    """True when argv[j] starts a command that runs inside another program."""
     name = os.path.basename(argv[j])
-    if name in INSTALL_TOOLS or PIP.match(name):
+    base = name.partition("@")[0]  # corepack runs pnpm@10.0.0
+    if base in INSTALL_TOOLS or PIP.match(base) or name in SHELLS:
         return True
     if PYTHON.match(name):
         module = python_module(argv[j + 1 :])
@@ -689,21 +828,76 @@ def starts_install_tool(argv: list[str], j: int) -> bool:
     return False
 
 
+def unknown_option(
+    word: str, value_flags: frozenset[str], bool_flags: frozenset[str]
+) -> bool:
+    return (
+        word.startswith("--")
+        and "=" not in word
+        and word not in value_flags
+        and word not in bool_flags
+    )
+
+
+def risky_option(name: str) -> bool:
+    return name.startswith("--") and RISKY_SETTING.search(name) is not None
+
+
+def risky_variable(name: str) -> bool:
+    return (
+        PACKAGE_TOOL_VARIABLE.match(name) is not None
+        and RISKY_SETTING.search(name) is not None
+    )
+
+
+def find_verb(
+    args: list[str],
+    verbs: frozenset[str],
+    value_flags: frozenset[str],
+    bool_flags: frozenset[str],
+) -> int | None:
+    """The index of a tool's subcommand, as in `uv --directory api add x`.
+
+    A word right after an option we do not know may be that option's value, so it is
+    skipped unless it is a known subcommand.
+    """
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            return i + 1 if i + 1 < len(args) else None
+        if arg.startswith("-") and arg != "-":
+            name, eq, _ = arg.partition("=")
+            i += 2 if name in value_flags and not eq else 1
+            continue
+        previous = args[i - 1] if i else ""
+        if arg in verbs or not unknown_option(previous, value_flags, bool_flags):
+            return i
+        i += 1
+    return None
+
+
 def read_args(
     args: list[str],
     value_flags: frozenset[str],
-    blocked_flags: frozenset[str],
+    bool_flags: frozenset[str],
+    file_flags: frozenset[str],
     plan: Plan,
     tool: str,
     stop_at_operand: bool = False,
-) -> tuple[list[str], dict[str, list[str]]]:
-    """Split arguments into operands and option values. Blocked options add a problem.
+) -> tuple[list[str], dict[str, list[str]], list[str]]:
+    """Split arguments into operands, option values and possible option values.
 
-    With stop_at_operand, reading stops at the first operand, which is returned with
-    everything after it: the command that uvx, uv run or pnpm dlx starts.
+    Options that read packages from a file or a path, or that point at another index
+    or registry, add a problem to the plan. A word right after an option we do not
+    know is returned separately: it may be that option's value or an operand, so
+    callers check it either way. With stop_at_operand, reading stops at the first
+    operand, which is returned with everything after it: the command that uvx,
+    uv run or pnpm dlx starts.
     """
     operands: list[str] = []
     values: dict[str, list[str]] = {}
+    maybes: list[str] = []
     i = 0
     while i < len(args):
         arg = args[i]
@@ -711,37 +905,33 @@ def read_args(
             operands += args[i + 1 :]
             break
         if not arg.startswith("-") or arg == "-":
-            if stop_at_operand:
+            if i and unknown_option(args[i - 1], value_flags, bool_flags):
+                maybes.append(arg)
+            elif stop_at_operand:
                 operands += args[i:]
                 break
-            operands.append(arg)
+            else:
+                operands.append(arg)
             i += 1
             continue
         name, eq, inline = arg.partition("=")
         attached = (
-            not name.startswith("--") and len(name) > 2 and name[:2] in blocked_flags
+            not name.startswith("--") and len(name) > 2 and name[:2] in file_flags
         )
-        if name in blocked_flags or attached:
+        if name in file_flags or attached or risky_option(name):
             plan.problems.append(
-                f"`{tool} {name[:2] if attached else name}` installs from a source the "
-                "check cannot vet (a file, a URL, a custom index or a local path). Name "
-                "each package from PyPI or npm instead."
+                f"`{tool} {name[:2] if attached else name}` installs from a file, a path or "
+                "another index or registry, or turns off certificate checks, so the check "
+                "cannot vet it. Name each package from PyPI or npm instead."
             )
-        takes_value = (name in value_flags or name in blocked_flags) and not eq
-        takes_value = takes_value and not attached
-        value = args[i + 1] if takes_value and i + 1 < len(args) else inline
-        values.setdefault(name, []).append(value)
+        takes_value = (
+            (name in value_flags or name in file_flags) and not eq and not attached
+        )
+        values.setdefault(name, []).append(
+            args[i + 1] if takes_value and i + 1 < len(args) else inline
+        )
         i += 2 if takes_value else 1
-    return operands, values
-
-
-def first_operand(args: list[str], value_flags: frozenset[str]) -> str | None:
-    i = 0
-    while i < len(args):
-        if not args[i].startswith("-") or args[i] == "-":
-            return args[i]
-        i += 2 if args[i] in value_flags else 1
-    return None
+    return operands, values, maybes
 
 
 def parse_pypi_spec(spec: str, plan: Plan, at_version: bool = False) -> None:
@@ -774,12 +964,8 @@ def parse_pypi_spec(spec: str, plan: Plan, at_version: bool = False) -> None:
     elif rest.startswith("==") and rest[2:].strip():
         version = rest[2:].strip()
     elif rest:
-        plan.problems.append(
-            f"`{spec}` is not an exact version. Pin one with `name==X.Y.Z`, or use the "
-            "bare name, so the check vets the exact version that gets installed."
-        )
-        return
-    if version is not None and not PY_VERSION.match(version):
+        version = ""
+    if version == "" or (version is not None and not PY_VERSION.match(version)):
         plan.problems.append(
             f"`{spec}` is not an exact version. Pin one with `name==X.Y.Z`, or use the "
             "bare name, so the check vets the exact version that gets installed."
@@ -861,146 +1047,249 @@ def blocked_tool(plan: Plan, tool: str, alternative: str) -> None:
     )
 
 
+def check_config_change(tool: str, verb: str, tail: list[str], plan: Plan) -> None:
+    """`npm config set registry ...` would point later installs at another registry."""
+    keys = tail[1:2] if verb in ("config", "c") and tail[:1] == ["set"] else []
+    keys += tail[:1] if verb == "set" else []
+    for key in keys:
+        if RISKY_SETTING.search(key.partition("=")[0]):
+            plan.problems.append(
+                f"`{tool} {verb}` would change `{key.partition('=')[0]}`, which decides "
+                "where packages come from or whether certificates are checked. Leave it "
+                "as it is."
+            )
+
+
 def plan_uv(args: list[str], plan: Plan) -> None:
-    rest, _ = read_args(
-        args, UV_GLOBAL_VALUE_FLAGS, UV_BLOCKED_FLAGS, plan, "uv", stop_at_operand=True
+    index = find_verb(args, UV_SUBCOMMANDS, UV_VALUE_FLAGS, UV_BOOL_FLAGS)
+    head = args if index is None else args[:index]
+    _, options, _ = read_args(
+        head, UV_VALUE_FLAGS, UV_BOOL_FLAGS, UV_FILE_FLAGS, plan, "uv"
     )
-    sub, tail = (rest[0], rest[1:]) if rest else ("", [])
-    if sub == "add":
-        specs, _ = read_args(tail, UV_VALUE_FLAGS, UV_BLOCKED_FLAGS, plan, "uv add")
-        for spec in specs:
-            parse_pypi_spec(spec, plan)
-    elif sub == "pip" and tail[:1] in (["install"], ["sync"]):
-        plan.problems.append(
-            f"`uv pip {tail[0]}` changes the environment without updating pyproject.toml "
-            "and uv.lock. Use `uv add <name>==<version>`, which the check vets, or "
-            "`uv sync` to install the reviewed lockfile."
-        )
-    elif sub == "tool" and tail[:1] in (["run"], ["install"]):
-        plan_tool_run(tail[1:], plan, f"uv tool {tail[0]}")
-    elif sub == "run":
-        _, values = read_args(
+    if index is None:
+        return
+    sub, tail = args[index], args[index + 1 :]
+    if sub == "run":
+        _, more, _ = read_args(
             tail,
             UV_RUN_VALUE_FLAGS,
-            UV_BLOCKED_FLAGS,
+            UV_BOOL_FLAGS,
+            UV_FILE_FLAGS,
             plan,
             "uv run",
             stop_at_operand=True,
         )
-        for spec in values.get("--with", []):
+        for spec in more.get("--with", []):
             for item in spec.split(","):
                 parse_pypi_spec(item, plan, at_version=True)
+    elif sub == "tool" and tail[:1] in (["run"], ["install"]):
+        more = plan_tool_run(tail[1:], plan, f"uv tool {tail[0]}")
+    else:
+        operands, more, maybes = read_args(
+            tail, UV_VALUE_FLAGS, UV_BOOL_FLAGS, UV_FILE_FLAGS, plan, f"uv {sub}"
+        )
+        if sub == "add":
+            for spec in operands + maybes:
+                parse_pypi_spec(spec, plan)
+        elif sub == "pip" and operands[:1] in (["install"], ["sync"], ["compile"]):
+            plan.problems.append(
+                f"`uv pip {operands[0]}` works outside pyproject.toml and uv.lock, so the "
+                "check cannot vet it. Use `uv add <name>==<version>`, or `uv sync` to "
+                "install the reviewed lockfile."
+            )
+        elif sub == "tool" and operands[:1] == ["upgrade"]:
+            plan.problems.append(f"`uv tool upgrade` {BULK_UPGRADE}")
+        elif sub == "venv" and "--seed" in more:
+            plan.problems.append(
+                "`uv venv --seed` installs pip and setuptools without the check, and uv "
+                "does not need them. Leave out --seed."
+            )
+    flags = [*options, *more]
+    if any(
+        f in UV_UPGRADE_FLAGS or (not f.startswith("--") and f[:2] in ("-U", "-P"))
+        for f in flags
+    ):
+        plan.problems.append(f"`uv {sub} --upgrade` {BULK_UPGRADE}")
 
 
-def plan_tool_run(args: list[str], plan: Plan, tool: str) -> None:
+def plan_tool_run(args: list[str], plan: Plan, tool: str) -> dict[str, list[str]]:
     """uvx, uv tool run and uv tool install: the package is --from or the command."""
-    operands, values = read_args(
-        args, UV_VALUE_FLAGS, UV_BLOCKED_FLAGS, plan, tool, stop_at_operand=True
+    operands, options, maybes = read_args(
+        args,
+        UV_VALUE_FLAGS,
+        UV_BOOL_FLAGS,
+        UV_FILE_FLAGS,
+        plan,
+        tool,
+        stop_at_operand=True,
     )
-    target = (values.get("--from") or operands[:1])[-1:]
-    extras = [item for value in values.get("--with", []) for item in value.split(",")]
-    for spec in target + extras:
+    targets = options.get("--from", [])[-1:] or operands[:1] + maybes
+    extras = [item for value in options.get("--with", []) for item in value.split(",")]
+    for spec in targets + extras:
         parse_pypi_spec(spec, plan, at_version=True)
+    return options
 
 
 def plan_pnpm(args: list[str], plan: Plan, depth: int) -> None:
-    rest, options = read_args(
-        args,
-        PNPM_GLOBAL_VALUE_FLAGS,
-        PNPM_BLOCKED_FLAGS,
-        plan,
-        "pnpm",
-        stop_at_operand=True,
+    index = find_verb(args, PNPM_VERBS, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS)
+    head = args if index is None else args[:index]
+    _, options, _ = read_args(
+        head, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS, frozenset(), plan, "pnpm"
     )
-    if not rest:
+    while index is not None and args[index] in ("recursive", "multi", "m"):
+        rest = args[index + 1 :]
+        found = find_verb(rest, PNPM_VERBS, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS)
+        index, args = (None, rest) if found is None else (found, rest)
+    if index is None:
         return
-    verb, tail = rest[0], rest[1:]
-    if verb == "dlx":
+    verb, tail = args[index], args[index + 1 :]
+    check_config_change("pnpm", verb, tail, plan)
+    if verb in ("update", "up", "upgrade", "self-update"):
+        plan.problems.append(f"`pnpm {verb}` {BULK_UPGRADE}")
+    elif verb == "dlx":
         plan_dlx(tail, plan, depth, options.get("--package", []))
-        return
-    if verb not in ("add", "install", "i", "update", "up", "upgrade", "create"):
-        return
-    specs, _ = read_args(
-        tail, PNPM_VALUE_FLAGS, PNPM_BLOCKED_FLAGS, plan, f"pnpm {verb}"
-    )
-    if verb == "create":
-        specs = [create_package(spec) for spec in specs[:1]]
-    for spec in specs:
-        parse_npm_spec(spec, plan)
+    elif verb in ("add", "install", "i", "create"):
+        operands, _, maybes = read_args(
+            tail, PNPM_VALUE_FLAGS, PNPM_BOOL_FLAGS, frozenset(), plan, f"pnpm {verb}"
+        )
+        specs = operands + maybes
+        if verb == "create":
+            specs = [create_package(spec) for spec in specs[:1]]
+        for spec in specs:
+            parse_npm_spec(spec, plan)
 
 
 def plan_dlx(args: list[str], plan: Plan, depth: int, packages: list[str]) -> None:
     """pnpm dlx: --package values are the packages, otherwise the command is."""
-    operands, values = read_args(
+    operands, options, maybes = read_args(
         args,
         PNPM_VALUE_FLAGS,
-        PNPM_BLOCKED_FLAGS,
+        PNPM_BOOL_FLAGS,
+        frozenset(),
         plan,
         "pnpm dlx",
         stop_at_operand=True,
     )
-    found = packages + values.get("--package", [])
-    shell_mode = "-c" in values or "--shell-mode" in values
+    found = packages + options.get("--package", [])
+    shell_mode = "-c" in options or "--shell-mode" in options
     command = operands[0] if operands else None
     if shell_mode and command:
-        plan_command(command, plan, depth + 1)  # pnpm dlx -c runs the text in a shell
-    if not found and command:
-        found = (split_words(command) if shell_mode else [command])[:1]
+        plan_script(command, plan, depth + 1)  # pnpm dlx -c runs the text in a shell
+    if not found:
+        first = (split_words(command) if shell_mode else [command]) if command else []
+        found = first[:1] + maybes
     for spec in found:
         parse_npm_spec(spec, plan)
 
 
+def plan_npm(args: list[str], plan: Plan) -> None:
+    index = find_verb(args, NPM_VERBS, NPM_VALUE_FLAGS, frozenset())
+    if index is None:
+        return
+    verb, tail = args[index], args[index + 1 :]
+    check_config_change("npm", verb, tail, plan)
+    if verb in NPM_INSTALL_VERBS or (verb == "audit" and "fix" in tail):
+        blocked_tool(plan, f"npm {verb}", JS_WAY)
+
+
+def plan_corepack(args: list[str], plan: Plan) -> None:
+    """corepack downloads the package manager version a command names."""
+    if args[:1] and args[0] in ("use", "up", "install", "prepare", "pack", "hydrate"):
+        for arg in args[1:]:
+            if re.match(r"^(pnpm|yarn|npm)@", arg):
+                parse_npm_spec(arg, plan)
+
+
+def plan_script(text: str, plan: Plan, depth: int) -> None:
+    """Text that a shell runs as code, including here-documents it builds on the way."""
+    plan_command(text, plan, depth)
+    try:
+        lexer = lex(text)
+    except ParseError:
+        return
+    for tokens in [lexer.tokens, *lexer.nested]:
+        for token in tokens:
+            if token.kind == "heredoc":
+                plan_command(token.value, plan, depth)
+
+
 def plan_program(
-    program: str, args: list[str], heredocs: list[str], plan: Plan, depth: int
+    program: str, args: list[str], command: Command, plan: Plan, depth: int
 ) -> None:
     """Apply the install rules to one program and its arguments."""
+    base, at_sign, _ = program.partition("@")
+    if at_sign and base in ("pnpm", "yarn", "npm"):
+        parse_npm_spec(program, plan)  # corepack downloads this version first
+        program = base
+    script = script_of(program, args)
+    if program in plan.downloads or (
+        script and os.path.basename(script) in plan.downloads
+    ):
+        plan.problems.append(
+            "Running a file in the same command that downloads it is blocked, because "
+            "nothing checks what it runs. Download the file, read it, then decide "
+            "whether to run it."
+        )
     runs_code = (
         program in SHELLS
         or program in INTERPRETERS
         or program in ("eval", "source", ".")
         or PYTHON.match(program)
     )
-    if runs_code and any(DOWNLOAD_SUBSTITUTION.search(arg) for arg in args):
+    if runs_code and any(
+        DOWNLOAD_SUBSTITUTION.search(text) for text in args + command.inputs()
+    ):
         plan.problems.append(
             "Running a downloaded script is blocked, because nothing checks what it runs. "
             "Download the file, read it, then decide whether to run it."
         )
-    if program in SHELLS:
+    if program in DOWNLOADERS:
+        plan.downloads |= downloaded_files(program, args, command)
+    elif program in SHELLS:
         has_c, has_s, operand = shell_options(args)
         if has_c and operand is not None:
-            plan_command(operand, plan, depth + 1)
-        elif operand is None or has_s:
-            for body in heredocs:  # bash <<'EOF' runs the here-document as a script
-                plan_command(body, plan, depth + 1)
-        return
-    if program == "eval":
-        plan_command(" ".join(args), plan, depth + 1)
-        return
-    if program == "xargs":
-        if any(starts_install_tool(args, j) for j in range(len(args))):
+            plan_script(operand, plan, depth + 1)
+        elif has_s or operand in STDIN:  # bash <<'EOF' runs the here-document
+            here_strings = [t for op, t in command.redirects if op == "<<<"]
+            for text in command.heredocs + here_strings:
+                plan_script(text, plan, depth + 1)
+    elif program == "eval":
+        plan_script(" ".join(args), plan, depth + 1)
+    elif program in COMMAND_STRING_RUNNERS:
+        command_text = command_string(args)
+        if command_text:
+            plan_script(command_text, plan, depth + 1)
+    elif program == "watch":
+        plan_command(" ".join(watch_command(args)), plan, depth + 1)
+    elif program == "xargs":
+        if any(starts_nested_command(args, j) for j in range(len(args))):
             plan.problems.append(
                 "Packages passed through `xargs` cannot be checked. Name each package in "
                 "the command."
             )
-        return
-    if PYTHON.match(program):
+    elif PYTHON.match(program):
         module = python_module(args)
-        if module is None:
-            return
-        program, args = module
-    if program == "uv":
+        if module is not None:
+            plan_program(module[0], module[1], Command(), plan, depth + 1)
+    elif program == "uv":
         plan_uv(args, plan)
     elif program == "uvx":
         plan_tool_run(args, plan, "uvx")
     elif program == "pnpm":
         plan_pnpm(args, plan, depth)
-    elif PIP.match(program):
-        if first_operand(args, PIP_VALUE_FLAGS) in ("install", "download", "wheel"):
-            blocked_tool(plan, "pip install", PYTHON_WAY)
     elif program == "npm":
-        verb = first_operand(args, NPM_VALUE_FLAGS)
-        if verb in NPM_INSTALL_VERBS or (verb == "audit" and "fix" in args):
-            blocked_tool(plan, f"npm {verb}", JS_WAY)
+        plan_npm(args, plan)
+    elif program == "corepack":
+        plan_corepack(args, plan)
+    elif PIP.match(program):
+        index = find_verb(args, PIP_VERBS, PIP_VALUE_FLAGS, frozenset())
+        if index is not None and args[index] in (
+            "install",
+            "download",
+            "wheel",
+            "lock",
+        ):
+            blocked_tool(plan, "pip install", PYTHON_WAY)
     elif program in UNUSED_PYTHON_TOOLS:
         blocked_tool(plan, program, PYTHON_WAY)
     elif program in UNUSED_JS_TOOLS:
@@ -1009,17 +1298,24 @@ def plan_program(
 
 def plan_simple_command(command: Command, plan: Plan, depth: int) -> None:
     argv = command.argv
+    for word in argv:
+        name = word.partition("=")[0] if "=" in word else ""
+        if name and risky_variable(name):
+            plan.problems.append(
+                f"`{name}` decides where packages come from or whether certificates are "
+                "checked, so the check cannot vet installs that use it. Remove it."
+            )
     stripped = strip_wrappers(argv)
     program = os.path.basename(stripped[0]) if stripped else ""
     if program:
-        plan_program(program, stripped[1:], command.heredocs, plan, depth)
-    # A later word that starts an install, as in `watch -n 5 pnpm add zod` or
-    # `uv run pip install x`, is checked as a command of its own.
+        plan_program(program, stripped[1:], command, plan, depth)
+    # A later word that starts a command, as in `watch -n 5 pnpm add zod`,
+    # `docker exec web sh -c "pnpm add zod"` or `uv run pip install x`, is checked too.
     k = len(argv) - len(stripped)
     for j in range(1, len(argv)):
         if j == k or (program == "uv" and j == k + 1 and argv[j] == "pip"):
             continue
-        if starts_install_tool(argv, j):
+        if starts_nested_command(argv, j):
             if depth < MAX_NESTING:
                 plan_simple_command(Command(argv[j:]), plan, depth + 1)
             break
@@ -1044,8 +1340,8 @@ def plan_tokens(tokens: list[Token], plan: Plan, depth: int) -> None:
 
 
 def plan_fed_text(command: Command, plan: Plan, depth: int) -> None:
-    for body in command.heredocs:
-        plan_command(body, plan, depth)
+    for text in command.heredocs + [t for op, t in command.redirects if op == "<<<"]:
+        plan_script(text, plan, depth)
     program, args = program_of(command.argv)
     if program in ("echo", "printf"):
         plan_command(

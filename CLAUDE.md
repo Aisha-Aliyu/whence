@@ -75,7 +75,7 @@ Before adding any package:
 
 Pin versions through the lockfile. Never install from a URL, a git branch or a local path unless Aisha approves it.
 
-Add Python packages with `uv add <name>==<version>` and JavaScript packages with `pnpm add <name>@<version>`. A hook checks every install before it runs (docs/workflow.md, "The package check"). If it blocks one, do not work around it: tell Aisha what it blocked and why, with the links it gave. Only Aisha approves an exception, by adding the exact version to `.claude/approved-packages.txt` in a pull request.
+Add Python packages with `uv add <name>==<version>` and JavaScript packages with `pnpm add <name>@<version>`, one package at a time. Never upgrade in bulk with commands such as `pnpm update` or `uv lock --upgrade`: Dependabot proposes upgrades. A hook checks every install before it runs (docs/workflow.md, "The package check"). If it blocks one, do not work around it: tell Aisha what it blocked and why, with the links it gave. Only Aisha approves an exception, by adding the exact version to `.claude/approved-packages.txt` in a pull request.
 
 ## UI rules
 
