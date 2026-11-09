@@ -665,36 +665,86 @@ class Command:
         }
 
 
-def pipelines(tokens: list[Token]) -> list[list[Command]]:
-    """Group tokens into pipelines of simple commands."""
-    result: list[list[Command]] = []
-    pipeline: list[Command] = []
-    command = Command()
-    redirect: str | None = None
+# First words that open a compound command, and the word that closes each one.
+BLOCK_WORDS = {
+    "{": "}",
+    "if": "fi",
+    "case": "esac",
+    "for": "done",
+    "while": "done",
+    "until": "done",
+    "select": "done",
+}
+
+
+@dataclass
+class Block:
+    """A subshell, group, loop or if statement, or the whole command."""
+
+    closer: str | None
+    feeders: list[Command]  # commands whose output reaches the block's stdin
+    earlier: list[Command] = field(default_factory=list)  # in the current pipeline
+    inside: list[Command] = field(default_factory=list)  # every command in the block
+
+
+def fed_commands(tokens: list[Token]) -> list[tuple[Command, list[Command]]]:
+    """Each simple command, with the commands whose output may reach its stdin.
+
+    A pipe feeds every command in the subshell, group, loop or if statement it leads
+    into, as in `curl ... | (cd /tmp && sh)`, and such a block feeds the command it
+    pipes into, as in `... | while read l; do echo "$l"; done | sh`. Commands earlier
+    in a pipeline count even when they only pass the data on.
+    """
+    found: list[tuple[Command, list[Command]]] = []
+    blocks = [Block(None, [])]
+    command, redirect = Command(), None
+
+    def finish() -> None:
+        nonlocal command, redirect
+        if command.argv or command.heredocs or command.redirects:
+            block = blocks[-1]
+            found.append((command, block.feeders + block.earlier))
+            block.earlier.append(command)
+            for each in blocks:
+                each.inside.append(command)
+        command, redirect = Command(), None
+
     for token in tokens:
-        if token.kind == "word":
-            if redirect is None:
-                command.argv.append(token.value)
-            else:
-                command.redirects.append((redirect, token.value))
-                redirect = None
+        value = token.value
+        first = token.kind == "word" and redirect is None and not command.argv
+        if token.kind == "word" and redirect is not None:
+            command.redirects.append((redirect, value))
+            redirect = None
+        elif (first and value in BLOCK_WORDS) or (token.kind == "op" and value == "("):
+            finish()
+            outer = blocks[-1]
+            closer = BLOCK_WORDS.get(value, ")")
+            blocks.append(Block(closer, outer.feeders + outer.earlier))
+        elif (first or token.kind == "op") and value == blocks[-1].closer:
+            finish()
+            block = blocks.pop()
+            blocks[-1].earlier.extend(block.inside)  # its output may reach a pipe
+        elif token.kind == "word":
+            command.argv.append(value)
         elif token.kind == "redirect":
-            redirect = token.value
+            redirect = value
         elif token.kind == "heredoc":
-            command.heredocs.append(token.value)
+            command.heredocs.append(value)
             if not token.quoted:
-                command.expanded.append(token.value)
-        elif token.value in ("|", "|&"):
-            pipeline.append(command)
-            command, redirect = Command(), None
+                command.expanded.append(value)
         else:
-            pipeline.append(command)
-            result.append(pipeline)
-            pipeline, command, redirect = [], Command(), None
-    pipeline.append(command)
-    result.append(pipeline)
-    cleaned = [[c for c in p if c.argv or c.heredocs] for p in result]
-    return [p for p in cleaned if p]
+            finish()
+            # Anything but a pipe starts a new pipeline. The arms of a case
+            # statement still read its stdin, through the block.
+            if value not in ("|", "|&"):
+                blocks[-1].earlier.clear()
+    finish()
+    return found
+
+
+def simple_commands(tokens: list[Token]) -> list[Command]:
+    """Every simple command in the tokens, in order."""
+    return [command for command, _ in fed_commands(tokens)]
 
 
 def program_name(word: str) -> str:
@@ -890,9 +940,8 @@ def text_runs_stdin(text: str, depth: int) -> bool:
     except ParseError:
         return True
     for tokens in [lexer.tokens, *lexer.nested]:
-        for pipeline in pipelines(tokens):
-            if any(runs_stdin_code(command, depth) for command in pipeline):
-                return True
+        if any(runs_stdin_code(command, depth) for command in simple_commands(tokens)):
+            return True
     return False
 
 
@@ -1709,9 +1758,8 @@ def plan_fed_code(
             tokens = lex(target[2:-1]).tokens
         except ParseError:
             continue  # quoted text that only looks like <(...); a real one read already
-        for pipeline in pipelines(tokens):
-            for feeder in pipeline:
-                plan_fed_text(feeder, plan, depth)
+        for feeder in simple_commands(tokens):
+            plan_fed_text(feeder, plan, depth)
 
 
 def plan_program(
@@ -1857,83 +1905,6 @@ def plan_simple_command(command: Command, plan: Plan, depth: int) -> None:
                 break
 
 
-# First words that open a compound command, and the word that closes each one.
-BLOCK_WORDS = {
-    "{": "}",
-    "if": "fi",
-    "case": "esac",
-    "for": "done",
-    "while": "done",
-    "until": "done",
-    "select": "done",
-}
-
-
-@dataclass
-class Block:
-    """A subshell, group, loop or if statement, or the whole command."""
-
-    closer: str | None
-    feeders: list[Command]  # commands whose output reaches the block's stdin
-    earlier: list[Command] = field(default_factory=list)  # in the current pipeline
-    inside: list[Command] = field(default_factory=list)  # every command in the block
-
-
-def fed_commands(tokens: list[Token]) -> list[tuple[Command, list[Command]]]:
-    """Each simple command, with the commands whose output may reach its stdin.
-
-    A pipe feeds every command in the subshell, group, loop or if statement it leads
-    into, as in `curl ... | (cd /tmp && sh)`, and such a block feeds the command it
-    pipes into, as in `... | while read l; do echo "$l"; done | sh`. Commands earlier
-    in a pipeline count even when they only pass the data on.
-    """
-    found: list[tuple[Command, list[Command]]] = []
-    blocks = [Block(None, [])]
-    command, redirect = Command(), None
-
-    def finish() -> None:
-        nonlocal command, redirect
-        if command.argv or command.heredocs or command.redirects:
-            block = blocks[-1]
-            found.append((command, block.feeders + block.earlier))
-            block.earlier.append(command)
-            for each in blocks:
-                each.inside.append(command)
-        command, redirect = Command(), None
-
-    for token in tokens:
-        value = token.value
-        first = token.kind == "word" and redirect is None and not command.argv
-        if token.kind == "word" and redirect is not None:
-            command.redirects.append((redirect, value))
-            redirect = None
-        elif (first and value in BLOCK_WORDS) or (token.kind == "op" and value == "("):
-            finish()
-            outer = blocks[-1]
-            closer = BLOCK_WORDS.get(value, ")")
-            blocks.append(Block(closer, outer.feeders + outer.earlier))
-        elif (first or token.kind == "op") and value == blocks[-1].closer:
-            finish()
-            block = blocks.pop()
-            blocks[-1].earlier.extend(block.inside)  # its output may reach a pipe
-        elif token.kind == "word":
-            command.argv.append(value)
-        elif token.kind == "redirect":
-            redirect = value
-        elif token.kind == "heredoc":
-            command.heredocs.append(value)
-            if not token.quoted:
-                command.expanded.append(value)
-        else:
-            finish()
-            # A pipe carries on. So does ;; between the arms of a case statement,
-            # which all read its stdin, and the ) after a case pattern.
-            if value not in ("|", "|&", ";;", ")"):
-                blocks[-1].earlier.clear()
-    finish()
-    return found
-
-
 def substitution_runs_stdin(text: str) -> bool:
     """True when text holds a substitution, such as $(sh), <(sh) or >(sh), whose
     commands run code from stdin."""
@@ -1951,8 +1922,7 @@ def substitution_runs_stdin(text: str) -> bool:
     return any(
         runs_stdin_code(command)
         for tokens in scanner.nested
-        for pipeline in pipelines(tokens)
-        for command in pipeline
+        for command in simple_commands(tokens)
     )
 
 
