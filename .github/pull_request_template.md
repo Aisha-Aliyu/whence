@@ -27,4 +27,5 @@
 - [ ] Every new package is linked, needed, maintained, licensed and free of known vulnerabilities
 - [ ] Docs updated if behavior or a decision changed
 - [ ] UI changes checked at 280, 390, 768, 1280 and 2560 px, with keyboard only, and in light and dark mode
+- [ ] CodeRabbit and the review agent have no open findings
 - [ ] I can explain every part of this change
