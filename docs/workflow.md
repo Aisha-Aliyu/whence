@@ -106,7 +106,7 @@ To run it, ask Claude Code: "Use the reviewer agent to review this branch." Like
 
 It is read-only. Its tools are Read, Grep, Glob and Bash, with no file editing. Bash could still change files, so a second PreToolUse hook, [.claude/hooks/read_only_bash.py](../.claude/hooks/read_only_bash.py), checks every shell command the reviewer starts. It allows only read-only git commands (`git diff`, `log`, `show`, `status`, `blame`, `ls-files`, `rev-parse`, `merge-base`, `grep` and `git branch --show-current`), `python3 -m unittest`, and the ruff and mypy commands from CLAUDE.md. It blocks pipes, redirects, chained commands, variables, substitutions, wildcards, and the git options that write files or start other programs, including their shortened forms. Commands from anyone other than the reviewer pass this hook untouched.
 
-The rule lives in `.claude/settings.json`, not in the agent file, because Claude Code skips hooks in an agent file when the folder is not marked as trusted. Running the tests runs the project's own code, so the hook limits what the reviewer chooses to run; it is not a sandbox. CodeRabbit stays the second reviewer, and Aisha the last one.
+The rule lives in `.claude/settings.json`, not in the agent file, because Claude Code skips hooks in an agent file when the folder is not marked as trusted. Running the tests runs the project's own code, so the hook limits what the reviewer chooses to run; it is not a sandbox. CodeRabbit reviews first, this agent next, and Aisha last. Both hooks set `onFailure` to `block`, so from Claude Code 2.1.295 a hook that times out or crashes blocks the command; older versions ignore the setting and rely on `|| exit 2`.
 
 ## Working with Claude Code
 

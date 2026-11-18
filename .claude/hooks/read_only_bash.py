@@ -91,8 +91,8 @@ def uvx_allowed(args: list[str]) -> bool:
     tool, rest = args[0].partition("@")[0], args[1:]
     if tool == "ruff" and rest[:2] == ["format", "--check"]:
         paths = rest[2:]
-    elif tool == "ruff" and rest[:1] == ["check"]:
-        paths = [arg for arg in rest[1:] if arg != "--no-fix"]  # never apply fixes
+    elif tool == "ruff" and rest[:2] == ["check", "--no-fix"]:
+        paths = rest[2:]  # --no-fix is required, so a ruff setting cannot turn fixes on
     elif tool == "mypy" and rest[:1] == ["--strict"]:
         paths = rest[1:]
     else:
