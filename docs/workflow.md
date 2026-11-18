@@ -55,8 +55,48 @@ Ten checks for every pull request:
 - Before adding a package, confirm it exists on PyPI or npm and link to it. Check the latest version, release history, maintainers, license and known vulnerabilities, and whether we need it at all.
 - Lockfiles pin every version (`uv.lock` for Python, `pnpm-lock.yaml` for the web app).
 - Dependabot opens grouped update pull requests every week. New versions wait 7 days before Dependabot proposes them, which keeps us away from freshly published malicious releases. Security fixes skip that wait.
-- From Day 2, a Claude Code hook checks every install command before it runs.
+- A Claude Code hook checks every package before Claude installs it. See [the package check](#the-package-check).
 - The dependency review check blocks pull requests that add packages with known vulnerabilities of moderate severity or worse.
+
+## The package check
+
+Claude Code runs [.claude/hooks/check_packages.py](../.claude/hooks/check_packages.py) before every shell command it starts with the Bash or Monitor tools, as a PreToolUse hook set in [.claude/settings.json](../.claude/settings.json). The hook reads the command the way bash would and finds every package it would install, including installs inside `bash -c`, `$(...)`, a here-document that a shell runs, `uv run`, `pnpm exec` and `corepack`. Each package must pass four checks:
+
+1. It exists on PyPI or npm. Attackers register package names that AI tools tend to invent, so a misspelled or made-up name can pull in malware. This attack is called slopsquatting.
+2. The package is at least 30 days old, and every file of the version is at least 7 days old, because malicious releases are usually found and removed within days. A file added later to an old release counts as new. In [one review of ten supply chain attacks](https://blog.yossarian.net/2025/11/21/We-should-all-be-using-dependency-cooldowns), eight were open for less than a week.
+3. [OSV](https://osv.dev), the open vulnerability database, which also collects malware reports, lists nothing against that version.
+4. The version is not yanked on PyPI or deprecated on npm.
+
+The hook also enforces how we install. Every install names an exact version, so the check vets exactly what gets installed: `uv add httpx==0.28.1` and `pnpm add zod@4.1.12` for dependencies, `uvx ruff@0.16.9` and `pnpm dlx create-next-app@16.0.0` for one-off tools. Python packages come from PyPI through uv, and JavaScript packages come from npm through pnpm, so pip, npm, npx, yarn, Poetry and similar tools are blocked. The hook blocks installs from a URL, a git repository, a local path or a requirements file, and commands that point installs at another index, registry or mirror through an option, an environment variable or `npm config set`. Settings stored in files are a separate case, covered under what it cannot do. When `uv run` starts a script that lists its own dependencies at the top, the hook checks those too, and it blocks the run when it cannot read the script first (as with `uv run -`, which reads stdin), when the same command writes the script or a folder on its path, or when the same command changes files it cannot name, such as `git checkout`, `tar x` or `cp -R`. `corepack` must name the package manager's version too, as in `corepack pnpm@10.20.0`. Bulk upgrades such as `pnpm update` and `uv lock --upgrade` are blocked, because Dependabot proposes upgrades in reviewed pull requests. Running a downloaded script is blocked, whether it is piped into a shell (also through a subshell, a loop or `tee >(sh)`), run by `uv run` from a URL, or run later in the same command. Installs from the reviewed lockfiles (`uv sync`, `pnpm install`) run without checks.
+
+When every package passes, Claude receives each package's link and the age of its newest file, plus the latest version when an older one was pinned. When anything fails, the command does not run, and Claude receives the reason, the links and, for a version that is too new, an older version past the cooldown, which the check vets again when Claude tries it. Text written by package authors, such as an npm deprecation message, is never passed on, because it could carry instructions aimed at Claude. If a check cannot finish, for example because a registry is down, the command is blocked. Claude Code lets a hook that times out pass, so the script stops itself after 60 seconds and blocks, and settings.json turns a crash or a missing Python into a block too.
+
+### Approving a new release
+
+Sometimes a version is needed before its 7 days are up, such as a security fix. Aisha decides, then adds the exact version to [.claude/approved-packages.txt](../.claude/approved-packages.txt) in a pull request, with the reason and the date. The hook reads that file from `main` on GitHub, not from the copy in the session, so nothing in a session can approve its own install. GitHub can take a few minutes to serve the new file after a merge. If the hook cannot read the file, no approvals apply. An approval lifts only the age rules: the package must still exist and have no known vulnerability.
+
+### Network access
+
+The hook needs `pypi.org`, `registry.npmjs.org` and `api.osv.dev`, and reads approvals from `raw.githubusercontent.com`. Codespaces reaches all four. A Claude Code cloud environment on the default Trusted network level reaches all but OSV, so it blocks every install until OSV is allowed:
+
+1. In a Claude Code cloud session, tap the arrow after the session title at the top, then Edit cloud environment. On the new-session screen, the same dialog opens from the environment selector, the first control under the message box, through the settings icon on the environment's row.
+2. Set Network access to Custom.
+3. In Allowed domains, enter `api.osv.dev`.
+4. Tick Also include default list of common package managers, so the registries stay reachable.
+5. Save. Running sessions pick up the change within about a minute.
+
+If approvals stop working in a cloud session after this change, add `raw.githubusercontent.com` to the allowed domains too. Until then, the cooldown simply stays in force.
+
+### What it cannot do
+
+- It runs only where Claude Code reads this repository's settings: a Claude Code session started on this repository (from the Code tab in the Claude app, claude.ai/code, the desktop app or a terminal) or Claude Code inside a codespace. [Threads in a Claude Project](https://code.claude.com/docs/en/claude-projects) do not run a repository's hooks, so the check does not run there. Do Whence work in a session started on the repository.
+- It reads commands, so it cannot see installs that a script, a Makefile or a program performs, or a command disguised on purpose.
+- It reads commands the way bash does. Claude Code runs them in zsh when that is the user's shell, which is the default on a Mac, and zsh reads a few things differently. Where that matters for a download piped into a shell, the check takes the stricter reading, but zsh-only syntax such as `=(...)` can hide an install from it.
+- It checks commands, not file edits. A dependency typed into `package.json` or `pyproject.toml` by hand skips it, because `uv sync`, `uv run` and `pnpm install` update the lockfile to match before they install. Settings stored in files, such as `.npmrc`, `uv.toml` or the `[tool.uv]` table in `pyproject.toml`, can also point installs at another index. A second hook that checks edits to these files comes in its own pull request before Day 4, when the first of them appears. Until then, pull request review of the lockfile and settings diffs is the check.
+- It checks the packages a command names, not their dependencies. The lockfile review in each pull request, the dependency review check, Dependabot's 7-day cooldown, and the package managers' own cooldowns (uv's `exclude-newer` from Day 4, pnpm's `minimumReleaseAge` from Day 14) cover those.
+- Claude Code reloads its settings when the file changes, so a session that edits `.claude/` could switch the check off. CLAUDE.md forbids editing `.claude/` unless the task asks for it, and CodeRabbit flags every change there. The hook guards against mistakes; the hard limits are the cloud environment's network allowlist and branch protection.
+
+Run its tests with `python3 -m unittest discover --start-directory .claude/hooks --verbose`. The lint and type commands are in CLAUDE.md.
 
 ## Working with Claude Code
 

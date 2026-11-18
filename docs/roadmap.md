@@ -21,7 +21,7 @@ The plan follows the software development life cycle (SDLC): plan, design, build
 
 ## Phase 2: Build the backend
 
-- [ ] Day 4, API skeleton. FastAPI app, settings from environment variables, `/healthz` and `/readyz`, structured logging, one error format, tests, Dockerfile, CI for lint, types and tests, CodeQL, and a check that GitHub's dependency graph reads `uv.lock`. Concepts: health checks, liveness and readiness, Docker, API versioning, timeouts, build caching.
+- [ ] Day 4, API skeleton. FastAPI app, settings from environment variables, `/healthz` and `/readyz`, structured logging, one error format, tests, Dockerfile, CI for lint, types and tests (including the package check's tests), CodeQL, a check that GitHub's dependency graph reads `uv.lock`, and uv's `exclude-newer` setting, so dependencies of dependencies also wait 7 days. Concepts: health checks, liveness and readiness, Docker, API versioning, timeouts, build caching.
 - [ ] Day 5, database. Schema, Alembic migrations, indexes, row-level security, database roles, connection pooling, Postgres with pgvector for local development. Concepts: migrations, schema versioning, indexing, N+1 queries, CAP theorem.
 - [ ] Day 6, authentication and authorization. Supabase Auth with password rules, Google sign-in, authenticator-app 2FA, CAPTCHA, email verification and a free SMTP service for sign-in emails. A breached-password check. Token verification in the API. Workspace roles. Tests that prove one workspace cannot see another's data. Concepts: OAuth, JWT, key rotation, RBAC, clock skew.
 - [ ] Day 7, ingestion part 1. Upload route with file validation, private storage, the job queue, the worker. Concepts: message queues, pessimistic and optimistic locking, idempotency, race conditions, deadlocks, backpressure, sagas.
@@ -34,7 +34,7 @@ The plan follows the software development life cycle (SDLC): plan, design, build
 
 ## Phase 3: Build the frontend
 
-- [ ] Day 14, web app foundation. Next.js, design tokens, self-hosted fonts, layout, security headers, Content Security Policy, the server-side bridge to the API. Concepts: XSS, CSP, reverse proxies.
+- [ ] Day 14, web app foundation. Next.js, design tokens, self-hosted fonts, layout, security headers, Content Security Policy, the server-side bridge to the API, and pnpm's `minimumReleaseAge` setting, so JavaScript dependencies also wait 7 days. Concepts: XSS, CSP, reverse proxies.
 - [ ] Day 15, account screens. Sign-up, sign-in, 2FA setup and challenge, password reset, email verification, session handling. Concepts: secure cookies, CSRF.
 - [ ] Day 16, workspaces and documents. Uploads with progress, statuses, replace and delete, members and invites, skeleton loaders that match each screen.
 - [ ] Day 17, asking. Streaming answers, citations, a source viewer that highlights the passage, keyboard and screen reader support.
