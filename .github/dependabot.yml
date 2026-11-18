@@ -18,3 +18,35 @@ updates:
     commit-message:
       prefix: "ci"
     open-pull-requests-limit: 5
+
+  # The dev container's features (Node, Docker, GitHub CLI) in .devcontainer/devcontainer.json.
+  - package-ecosystem: "devcontainers"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
+    groups:
+      dev-container-features:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "build"
+    open-pull-requests-limit: 5
+
+  # The dev container's base images (Python and uv) in .devcontainer/Dockerfile.
+  - package-ecosystem: "docker"
+    directory: "/.devcontainer"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
+    groups:
+      dev-container-images:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "build"
+    open-pull-requests-limit: 5

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
+  "name": "Whence",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/node:2.1.1": {
+      "version": "24",
+      "pnpmVersion": "none"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:4.1.3": {
+      "moby": false
+    },
+    "ghcr.io/devcontainers/features/github-cli:1.1.3": {}
+  },
+  "hostRequirements": {
+    "cpus": 2
+  },
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "editorconfig.editorconfig"
+      ]
+    }
+  }
+}
