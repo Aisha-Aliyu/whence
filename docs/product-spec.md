@@ -90,7 +90,7 @@ These numbers live in private product analytics. They never appear on the websit
 - Palette sampled from the reference image: ink #11141B, signal blue #0245CF, paper #EDEDED. The hex codes printed on that image (#FF862D, #01605A, #FFD0A8) describe a different palette, so we sampled the visible colors instead.
 - Contrast: blue on white is 7.6:1, blue on paper 6.5:1 and ink on paper 15.7:1. Blue on ink is only 2.4:1, so dark mode uses a lighter blue for text and links.
 - Solid colors only. No gradients anywhere.
-- Type: one sans serif for the interface and for reading, one monospace for citations and page numbers. Both under the SIL Open Font License and served from our own domain. Front-runner: IBM Plex Sans with IBM Plex Mono. Day 3 confirms it with a specimen.
+- Type: one sans serif for the interface and for reading, one monospace for citations and page numbers. Both under the SIL Open Font License and served from our own domain. Decided on Day 3: IBM Plex Sans with IBM Plex Mono. See [the design system](design-system.md).
 - Feel: calm, precise and editorial. Citations sit next to the sentence they support and open the passage in one tap.
 
 ## Constraints

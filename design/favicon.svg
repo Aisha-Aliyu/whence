@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .tile { fill: #EDEDED }
+    .mark { stroke: #11141B }
+    .dot { fill: #0245CF }
+    @media (prefers-color-scheme: dark) {
+      .tile { fill: #11141B }
+      .mark { stroke: #EDEDED }
+      .dot { fill: #8AAEFF }
+    }
+  </style>
+  <rect class="tile" width="32" height="32" rx="6"/>
+  <path class="mark" d="M12 8H8v16h4M20 8h4v16h-4" fill="none" stroke-width="3"/>
+  <circle class="dot" cx="16" cy="16" r="3"/>
+</svg>

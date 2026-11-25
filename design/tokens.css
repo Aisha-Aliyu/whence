@@ -1,0 +1,111 @@
+/*
+ * Whence design tokens. Components use these variables only, never raw values.
+ * Light mode is the default. Dark mode follows the system setting, and the
+ * app can force either mode with data-theme on <html>.
+ * Contrast ratios for every pairing are in docs/design-system.md.
+ */
+
+:root {
+  /* Color */
+  --color-bg: #ededed; /* paper */
+  --color-surface: #ffffff;
+  --color-surface-muted: #e2e3e6; /* skeletons and table headers */
+  --color-text: #11141b; /* ink */
+  --color-text-muted: #4b5160;
+  --color-accent: #0245cf; /* signal blue: actions, links, focus */
+  --color-accent-strong: #01358f; /* hover and pressed */
+  --color-on-accent: #ffffff;
+  --color-border: #7a808c; /* input borders, 3:1 or more */
+  --color-divider: #d3d5da; /* decorative lines only */
+  --color-danger: #b42318;
+  --color-success: #0a6b3b;
+  --color-highlight: #d9e3f8; /* the cited passage in the source viewer */
+
+  /* Type */
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-sm: 0.875rem; /* 14px, captions and table metadata */
+  --text-base: 1rem; /* 16px, body and controls */
+  --text-lg: 1.125rem; /* 18px, answer text */
+  --text-xl: 1.25rem; /* 20px, section headings */
+  --text-2xl: 1.5rem; /* 24px, page titles */
+  --text-3xl: 2rem; /* 32px, marketing headings */
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65; /* long answers */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --measure: 70ch; /* longest line of reading text */
+
+  /* Space, on a 4px grid */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* Shape. Nothing rounder than 8px, so no pill shapes. */
+  --radius-sm: 4px; /* buttons, inputs, citation chips */
+  --radius-md: 8px; /* panels, dialogs, menus */
+  --border-width: 1px;
+  --focus-width: 2px;
+  --focus-offset: 2px;
+  --shadow-overlay: 0 4px 16px rgb(17 20 27 / 0.16); /* menus and dialogs only */
+
+  /* Size */
+  --target-min: 44px; /* smallest tap target where the layout allows */
+  --icon-size: 1.5rem;
+  --content-max: 1440px; /* content stops widening here */
+
+  /* Motion: state changes only */
+  --duration-fast: 150ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #11141b; /* ink */
+    --color-surface: #1b1f29;
+    --color-surface-muted: #262b37;
+    --color-text: #ededed; /* paper */
+    --color-text-muted: #a7adb9;
+    --color-accent: #8aaeff; /* signal blue is 2.4:1 on ink, too low for text */
+    --color-accent-strong: #b3cbff;
+    --color-on-accent: #11141b;
+    --color-border: #6e7584;
+    --color-divider: #2f3542;
+    --color-danger: #ff9a8f;
+    --color-success: #6fd39c;
+    --color-highlight: #24345a;
+    --shadow-overlay: 0 4px 16px rgb(0 0 0 / 0.5);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #11141b;
+  --color-surface: #1b1f29;
+  --color-surface-muted: #262b37;
+  --color-text: #ededed;
+  --color-text-muted: #a7adb9;
+  --color-accent: #8aaeff;
+  --color-accent-strong: #b3cbff;
+  --color-on-accent: #11141b;
+  --color-border: #6e7584;
+  --color-divider: #2f3542;
+  --color-danger: #ff9a8f;
+  --color-success: #6fd39c;
+  --color-highlight: #24345a;
+  --shadow-overlay: 0 4px 16px rgb(0 0 0 / 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+  }
+}

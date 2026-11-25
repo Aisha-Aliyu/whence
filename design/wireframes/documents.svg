@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="14" fill="#11141B">
+  <title>Wireframe: documents, desktop width 1280 px</title>
+  <rect width="1280" height="800" fill="#EDEDED"/>
+  <!-- Top bar -->
+  <rect width="1280" height="56" fill="#FFFFFF"/>
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#D3D5DA"/>
+  <path d="M28 19H24v18h4M36 19h4v18h-4" fill="none" stroke="#11141B" stroke-width="2.5"/>
+  <circle cx="32" cy="28" r="2.5" fill="#0245CF"/>
+  <text x="50" y="34" font-size="18" font-weight="600">Whence</text>
+  <rect x="150" y="12" width="180" height="32" rx="4" fill="#FFFFFF" stroke="#7A808C"/>
+  <text x="162" y="33">Workspace: Acme Ops</text>
+  <circle cx="1244" cy="28" r="16" fill="#E2E3E6"/>
+  <!-- Side navigation -->
+  <rect x="0" y="57" width="220" height="743" fill="#FFFFFF"/>
+  <text x="28" y="101">Ask</text>
+  <rect x="12" y="120" width="196" height="40" rx="4" fill="#D9E3F8"/>
+  <text x="28" y="145" font-weight="600">Documents</text>
+  <text x="28" y="185">Members</text>
+  <text x="28" y="225">Settings</text>
+  <!-- Header -->
+  <text x="252" y="108" font-size="24" font-weight="600">Documents</text>
+  <text x="252" y="134" fill="#4B5160">PDF, Word, Markdown, plain text and HTML, up to 20 MB each.</text>
+  <rect x="1120" y="84" width="128" height="44" rx="4" fill="#0245CF"/>
+  <text x="1184" y="111" fill="#FFFFFF" font-weight="600" text-anchor="middle">Upload</text>
+  <!-- Table -->
+  <rect x="252" y="160" width="996" height="300" rx="8" fill="#FFFFFF"/>
+  <rect x="252" y="160" width="996" height="44" rx="8" fill="#E2E3E6"/>
+  <text x="272" y="187" font-weight="600">Name</text>
+  <text x="652" y="187" font-weight="600">Status</text>
+  <text x="852" y="187" font-weight="600">Pages</text>
+  <text x="942" y="187" font-weight="600">Added</text>
+  <text x="1084" y="187" font-weight="600">Actions</text>
+  <text x="272" y="236">Billing policy.pdf</text>
+  <text x="652" y="236" fill="#0A6B3B">Ready</text>
+  <text x="852" y="236" font-family="IBM Plex Mono, ui-monospace, monospace">12</text>
+  <text x="942" y="236">Aisha, 3 Nov</text>
+  <text x="1084" y="236" fill="#0245CF">Replace   Delete</text>
+  <line x1="252" y1="256" x2="1248" y2="256" stroke="#D3D5DA"/>
+  <text x="272" y="288">Travel handbook.docx</text>
+  <text x="652" y="288">Reading, 40%</text>
+  <rect x="652" y="298" width="160" height="6" fill="#E2E3E6"/>
+  <rect x="652" y="298" width="64" height="6" fill="#0245CF"/>
+  <text x="852" y="288" font-family="IBM Plex Mono, ui-monospace, monospace">-</text>
+  <text x="942" y="288">Aisha, 3 Nov</text>
+  <line x1="252" y1="320" x2="1248" y2="320" stroke="#D3D5DA"/>
+  <text x="272" y="352">Scanned contract.pdf</text>
+  <text x="652" y="352" fill="#B42318">Failed: pages have no text</text>
+  <text x="852" y="352" font-family="IBM Plex Mono, ui-monospace, monospace">-</text>
+  <text x="942" y="352">Musa, 2 Nov</text>
+  <text x="1084" y="352" fill="#0245CF">Retry   Delete</text>
+  <!-- Notes -->
+  <text x="252" y="500" fill="#4B5160" font-size="12">Status is always words, and color only repeats it. Failed rows say why and what to do next.</text>
+  <text x="252" y="520" fill="#4B5160" font-size="12">Delete asks for confirmation and says what happens to answers that cited the document.</text>
+  <text x="252" y="540" fill="#4B5160" font-size="12">While loading, the table shows static skeleton rows of the same size. With no documents, one sentence and the Upload button.</text>
+  <text x="252" y="560" fill="#4B5160" font-size="12">Below 640 px each row becomes a card: name, status, then actions.</text>
+</svg>
