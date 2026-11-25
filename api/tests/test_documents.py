@@ -4,6 +4,7 @@ The isolation tests prove that a user in workspace A can neither read nor change
 documents or passages in workspace B, through the API and in the database.
 """
 
+import threading
 from uuid import UUID
 
 import httpx
@@ -11,6 +12,10 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+from app import documents
+from app.db import open_pool
+from app.errors import ApiError
+from app.extract import Extracted, extract
 from tests.conftest import FakeEmbedder, Headers, make_client, make_pdf
 from tests.test_workspaces import add_member, as_app, create
 
@@ -168,3 +173,40 @@ def test_uploads_must_be_allowed_types_within_the_limits(
             upload(app, auth, alice, workspace, b"a" * 900, "a.txt").status_code == 202
         )
         assert error(b"b" * 900, "b.txt") == "workspace_full"
+
+
+def test_two_uploads_at_once_cannot_overfill_a_workspace(
+    client: TestClient,
+    auth: Headers,
+    users: tuple[UUID, UUID],
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alice, _ = users
+    workspace = UUID(create(client, auth, alice))
+    both_checked = threading.Barrier(2)
+
+    def slow_extract(data: bytes, name: str) -> Extracted:
+        both_checked.wait(timeout=5)  # both uploads passed the first quota check
+        return extract(data, name)
+
+    monkeypatch.setattr(documents, "extract", slow_extract)
+    results: list[str] = []
+
+    def save(data: bytes) -> None:
+        try:
+            documents.save(pool, alice, workspace, "notes.txt", data, 1500)
+            results.append("saved")
+        except ApiError as error:
+            results.append(error.code)
+
+    with open_pool(database_url, 2, 5) as pool:
+        threads = [
+            threading.Thread(target=save, args=(data,))
+            for data in (b"a" * 900, b"b" * 900)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert sorted(results) == ["saved", "workspace_full"]

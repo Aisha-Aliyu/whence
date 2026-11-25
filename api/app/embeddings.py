@@ -2,7 +2,8 @@
 
 The free plan includes 10,000 neurons a day, about 5 million tokens with this
 model, and calls fail with an error past that until 00:00 UTC. Cloudflare does
-not train on what we send or keep it after the request:
+not train on what we send, and for standard inference it keeps nothing after the
+request, apart from the exceptions its policy lists:
 https://developers.cloudflare.com/workers-ai/platform/privacy/
 """
 

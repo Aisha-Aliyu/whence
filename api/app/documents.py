@@ -156,21 +156,27 @@ def save(
 ) -> tuple[Document, bool]:
     """Stores the document and its passages. False when it already existed."""
     digest = hashlib.sha256(data).hexdigest()
-    with as_user(pool, user) as conn:
+    with as_user(pool, user) as conn:  # quick checks before the slow part
         existing = find_by_hash(conn, workspace_id, digest)
         if existing:
             return existing, False
-        if used_bytes(conn, workspace_id) + len(data) > quota:
-            raise ApiError(
-                413, "workspace_full", "This workspace is full. Delete some documents."
-            )
+        check_quota(conn, workspace_id, len(data), quota)
     extracted = extract(data, name)  # outside any transaction: parsing can be slow
     with as_user(pool, user) as conn:
+        # One upload per workspace at a time from here, so two uploads cannot
+        # both pass the quota check or both add the same file.
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (str(workspace_id),),
+        )
+        existing = find_by_hash(conn, workspace_id, digest)
+        if existing:
+            return existing, False
+        check_quota(conn, workspace_id, len(data), quota)
         row = conn.execute(
             "INSERT INTO whence.documents"
             " (workspace_id, name, kind, size_bytes, sha256, pages, uploaded_by)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s)"
-            " ON CONFLICT (workspace_id, sha256) DO NOTHING RETURNING id",
+            " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
                 workspace_id,
                 name,
@@ -181,10 +187,7 @@ def save(
                 user,
             ),
         ).fetchone()
-        if row is None:  # the same file arrived twice at once
-            duplicate = find_by_hash(conn, workspace_id, digest)
-            assert duplicate is not None
-            return duplicate, False
+        assert row is not None
         with conn.cursor() as cursor:
             cursor.executemany(
                 "INSERT INTO whence.passages"
@@ -244,14 +247,19 @@ def require_editor(conn: Connection[DictRow], workspace_id: UUID, user: UUID) ->
         )
 
 
-def used_bytes(conn: Connection[DictRow], workspace_id: UUID) -> int:
+def check_quota(
+    conn: Connection[DictRow], workspace_id: UUID, size: int, quota: int
+) -> None:
     row = conn.execute(
         "SELECT coalesce(sum(size_bytes), 0) AS used FROM whence.documents"
         " WHERE workspace_id = %s",
         (workspace_id,),
     ).fetchone()
     assert row is not None
-    return int(row["used"])
+    if int(row["used"]) + size > quota:
+        raise ApiError(
+            413, "workspace_full", "This workspace is full. Delete some documents."
+        )
 
 
 def find_by_hash(

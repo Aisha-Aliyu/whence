@@ -2,6 +2,7 @@
 
 import pytest
 
+from app import extract as extract_module
 from app.errors import ApiError
 from app.extract import PASSAGE_CHARS, extract, split
 from tests.conftest import make_pdf
@@ -19,12 +20,34 @@ def test_a_pdf_keeps_its_page_numbers() -> None:
 
 
 def test_markdown_passages_keep_their_section() -> None:
-    text = "# Leave\nTake 20 days a year.\n\n## Sick leave\nTell your manager.\n"
+    text = (
+        "# Leave\nTake 20 days a year.\n\n## Sick leave\nTell your manager.\n"
+        "## Sick leave\nBring a note after three days.\n"
+    )
     passages = extract(text.encode(), "handbook.md").passages
     assert [(p.section, p.text) for p in passages] == [
         ("Leave", "Take 20 days a year."),
         ("Sick leave", "Tell your manager."),
+        ("Sick leave", "Bring a note after three days."),  # same name, new section
     ]
+
+
+def test_a_paragraph_with_no_spaces_is_cut_at_the_limit() -> None:
+    passages = split("x" * (PASSAGE_CHARS * 2 + 5), None)
+    assert [len(p.text) for p in passages] == [PASSAGE_CHARS, PASSAGE_CHARS, 5]
+
+
+def test_reading_stops_once_a_file_has_too_much_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(extract_module, "MAX_PASSAGES", 2)
+    for data, name in (
+        (make_pdf(["One.", "Two.", "Three."]), "long.pdf"),
+        (b"One.\n\n" + b"x" * PASSAGE_CHARS * 2, "long.txt"),
+    ):
+        with pytest.raises(ApiError) as caught:
+            extract(data, name)
+        assert caught.value.code == "too_much_text"
 
 
 def test_long_text_becomes_passages_under_the_limit_with_nothing_lost() -> None:

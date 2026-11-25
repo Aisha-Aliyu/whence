@@ -64,11 +64,13 @@ def extract(data: bytes, name: str) -> Extracted:
             "no_text",
             "We found no text in this file. Scanned PDFs are not supported yet.",
         )
-    if len(extracted.passages) > MAX_PASSAGES:
-        raise ApiError(
-            413, "too_much_text", "This file has too much text. Split it into parts."
-        )
     return extracted
+
+
+def too_much_text() -> ApiError:
+    return ApiError(
+        413, "too_much_text", "This file has too much text. Split it into parts."
+    )
 
 
 def read_pdf(data: bytes) -> Extracted:
@@ -84,11 +86,11 @@ def read_pdf(data: bytes) -> Extracted:
             raise ApiError(
                 413, "too_many_pages", f"PDFs can have up to {MAX_PAGES} pages."
             )
-        passages = [
-            passage
-            for number, page in enumerate(reader.pages, start=1)
-            for passage in split(page.extract_text(), number)
-        ]
+        passages: list[Passage] = []
+        for number, page in enumerate(reader.pages, start=1):
+            passages += split(page.extract_text(), number)
+            if len(passages) > MAX_PASSAGES:  # stop now: text can dwarf the file
+                raise too_much_text()
         return Extracted("pdf", len(reader.pages), passages)
     except ApiError:
         raise
@@ -115,47 +117,60 @@ def split(text: str, page: int | None, markdown: bool = False) -> list[Passage]:
     passages: list[Passage] = []
     parts: list[str] = []
     size = 0
-    current: str | None = None
-    for section, paragraph in paragraphs(text, markdown):
+    current, heading = -1, None
+    for section, title, paragraph in paragraphs(text, markdown):
         for piece in pieces(paragraph):
             if parts and (section != current or size + len(piece) > PASSAGE_CHARS):
-                passages.append(Passage(page, current, "\n\n".join(parts)))
+                passages.append(Passage(page, heading, "\n\n".join(parts)))
+                if len(passages) > MAX_PASSAGES:
+                    raise too_much_text()
                 parts, size = [], 0
-            current = section
+            current, heading = section, title
             parts.append(piece)
             size += len(piece) + 2
     if parts:
-        passages.append(Passage(page, current, "\n\n".join(parts)))
+        passages.append(Passage(page, heading, "\n\n".join(parts)))
+    if len(passages) > MAX_PASSAGES:
+        raise too_much_text()
     return passages
 
 
-def paragraphs(text: str, markdown: bool) -> Iterator[tuple[str | None, str]]:
-    """Yields (section heading, paragraph). Blank lines end a paragraph."""
-    section: str | None = None
+def paragraphs(text: str, markdown: bool) -> Iterator[tuple[int, str | None, str]]:
+    """Yields (section number, heading, paragraph). Blank lines end a paragraph,
+    and every Markdown heading starts a new section, even a repeated one."""
+    section, heading = 0, None
     lines: list[str] = []
     for line in [*text.splitlines(), ""]:
         stripped = line.strip()
-        heading = HEADING.fullmatch(stripped) if markdown else None
-        if stripped and not heading:
+        match = HEADING.fullmatch(stripped) if markdown else None
+        if stripped and not match:
             lines.append(stripped)
             continue
         if lines:
-            yield section, "\n".join(lines)
+            yield section, heading, "\n".join(lines)
             lines = []
-        if heading:
-            section = heading.group(1)[:200]
+        if match:
+            section, heading = section + 1, match.group(1)[:200]
 
 
 def pieces(paragraph: str) -> Iterator[str]:
-    """Cuts a long paragraph at spaces into pieces of up to PASSAGE_CHARS."""
-    while len(paragraph) > PASSAGE_CHARS:
+    """Cuts a long paragraph at spaces into pieces of up to PASSAGE_CHARS.
+
+    It moves an offset instead of copying the rest each time, so a huge
+    paragraph costs time in proportion to its length.
+    """
+    start, end = 0, len(paragraph)
+    while end - start > PASSAGE_CHARS:
+        limit = start + PASSAGE_CHARS
         cut = max(
-            paragraph.rfind(" ", 0, PASSAGE_CHARS),
-            paragraph.rfind("\n", 0, PASSAGE_CHARS),
+            paragraph.rfind(" ", start, limit), paragraph.rfind("\n", start, limit)
         )
-        if cut <= 0:
-            cut = PASSAGE_CHARS
-        yield paragraph[:cut].strip()
-        paragraph = paragraph[cut:].strip()
-    if paragraph:
-        yield paragraph
+        if cut <= start:
+            cut = limit
+        if piece := paragraph[start:cut].strip():
+            yield piece
+        start = cut
+        while start < end and paragraph[start].isspace():
+            start += 1
+    if rest := paragraph[start:].strip():
+        yield rest
