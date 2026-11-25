@@ -87,7 +87,12 @@
   }
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --color-bg: #11141b;
   --color-surface: #1b1f29;
   --color-surface-muted: #262b37;
