@@ -162,7 +162,7 @@ The budget is zero, so every option below has a free plan. Before we commit to o
 | Web hosting | Vercel Hobby (free for personal, non-commercial projects, which Whence is; if it ever charges money, it moves to a plan that allows that) or Cloudflare Pages | Preview deploy per pull request, CDN, plan terms | Day 22 |
 | Database | Supabase Free | 500 MB holds roughly tens of thousands of passages. A project pauses after a week without activity and has no automatic backups, so we run our own backups. Day 22 settles how the demo stays awake, and a keep-awake job would have to run a real database query | Day 22 |
 | Sign-in emails | Supabase's built-in email only reaches the project's own team, at two messages an hour, so real users need an SMTP service. Without a domain, the options are a free transactional email plan, if its terms allow sending without one, or a dedicated Gmail account over SMTP with an app password, which has a low daily cap | Delivery tests to Gmail and Outlook inboxes | Day 6 |
-| Domain | A free eu.org domain, or the host's free subdomain such as whence.vercel.app. Reported eu.org waits range from hours to over a year. is-a.dev is out, because its terms bar sites behind a login and apps similar to ChatGPT or Claude | Whether eu.org approves in time | Apply on Day 3, decide on Day 23 |
+| Domain | The web host's free subdomain, such as whence.vercel.app or whence.netlify.app | Decided: a portfolio project does not need its own domain | Day 22, with the host |
 
 Free model tiers need care: some, such as Gemini's and Mistral's, may use what you send to train their models. Whence uses only providers whose terms rule that out, in production and in the public demo alike, because demo visitors type their own questions.
 

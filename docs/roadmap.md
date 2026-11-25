@@ -17,7 +17,7 @@ The plan follows the software development life cycle (SDLC): plan, design, build
 
 - [x] Day 1, plan and guardrails. Name, product spec, architecture, roadmap, working rules. Protected main branch, CodeRabbit, secret scanning, Dependabot, CLAUDE.md. Concepts: SDLC, branch protection, secrets management, CI/CD, IAM.
 - [ ] Day 2, development environment and AI guardrails. A dev container for Codespaces (Python, Node, Docker), the Claude Code cloud environment, a Claude Code hook that checks every package before it installs (does it exist, how old is it, does it have known vulnerabilities or malware reports), a read-only review agent, verified commits. Concepts: supply chain attacks, slopsquatting, dependency hell.
-- [ ] Day 3, design system. Color tokens from the palette, type, spacing, radius, our own SVG logo, favicon and icons, component rules, wireframes of the main screens, and the application for a free whence.eu.org domain, which can take months to approve. Concepts: design tokens, contrast ratios, WCAG 2.2.
+- [ ] Day 3, design system. Color tokens from the palette, type, spacing, radius, our own SVG logo, favicon and icons, component rules, and wireframes of the main screens. Concepts: design tokens, contrast ratios, WCAG 2.2.
 
 ## Phase 2: Build the backend
 
@@ -46,7 +46,7 @@ The plan follows the software development life cycle (SDLC): plan, design, build
 - [ ] Day 20, testing. Unit, integration and end-to-end tests with Playwright, a "try to break it" session, a load test, chaos drills. Concepts: throughput, chaos engineering.
 - [ ] Day 21, security audit. A senior security review of the whole codebase, OWASP checks, dependency audit, headers, CORS, row-level security tests, prompt injection tests, then fixes. Concepts: threat modeling, SSRF, open redirects.
 - [ ] Day 22, deployment. Free hosting choice, staging and production environments, secrets per environment, a deploy pipeline that runs migrations, health checks, rollback drill, backups and a restore drill, and keeping the free database awake. Concepts: rolling and blue-green deploys, rollbacks, disaster recovery, autoscaling, cold starts.
-- [ ] Day 23, domain and edge. whence.eu.org if it has been approved, otherwise the host's free subdomain. DNS, TLS, HSTS, CDN and firewall. Concepts: DNS, TLS, HTTP/2 and HTTP/3.
+- [ ] Day 23, edge. The host's free subdomain, TLS, HSTS, CDN and firewall. Concepts: DNS, TLS, HTTP/2 and HTTP/3.
 - [ ] Day 24, search engines and AI assistants. Titles and meta descriptions, sitemap.xml, robots.txt, llms.txt, structured data, Google Search Console, Bing Webmaster Tools, PageSpeed checks.
 - [ ] Day 25, launch. Final security audit, independent review, launch checklist, README case study with the architecture and eval results, demo video, interview notes. Concepts: semantic versioning, postmortems.
 
@@ -54,7 +54,7 @@ The plan follows the software development life cycle (SDLC): plan, design, build
 
 We do not launch until all of these are true:
 
-- The app is served over HTTPS from its permanent address: whence.eu.org if it is approved in time, otherwise the host's free subdomain.
+- The app is served over HTTPS from the web host's free subdomain.
 - The final security audit has no open high or critical findings.
 - Every page passes the accessibility and mobile checks in the definition of done.
 - The legal pages describe what the app actually does with data.

@@ -119,7 +119,7 @@ How Whence handles the problems production systems run into. Each row says what 
 | Long polling | Holding a request open until there is news | Not needed. Server-Sent Events replace it | - |
 | Server-Sent Events | A one-way stream from server to browser over HTTP | Streaming answers and document status | 11 |
 | gRPC | A binary protocol for calls between services | Not needed. We have one public HTTP API and no internal service calls | - |
-| DNS | The system that turns names into addresses | Records for the web app and the API on our free domain, if eu.org approves it. A host's free subdomain needs no DNS work | 23 |
+| DNS | The system that turns names into addresses | Whence uses its host's free subdomain, so the host manages the records. We explain how a request finds the host | 23 |
 | Cron jobs | Tasks that run on a schedule | Backups, cleanup of expired invites and orphaned files, nightly evaluations and the job sweep, run as scheduled GitHub Actions workflows, which are free for public repositories | 12, 22 |
 
 ## Observability
