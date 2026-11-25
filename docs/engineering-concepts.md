@@ -10,7 +10,7 @@ How Whence handles the problems production systems run into. Each row says what 
 | XSS (cross-site scripting) | An attacker's script runs in another user's browser | React escapes output. Answers render as sanitized markdown with no images or raw HTML. A strict Content Security Policy blocks injected scripts, with nonces on signed-in pages and hashes on cached public pages. Tokens sit in cookies that scripts cannot read | 7 |
 | CORS | The browser rule that decides which sites may call an API | The browser only talks to our own web server, so the API sends no CORS headers and browsers refuse any cross-origin call to it. If third parties ever need the API, they get API keys and an explicit allowlist, never a wildcard | 6, 7 |
 | SSRF | Tricking a server into calling internal addresses for you | Version 1 never fetches URLs from user input. If we add that, we block private IP ranges after DNS resolution and on every redirect | 8 |
-| Rate limiting | Capping how many requests one client can make in a time window | The web server limits per IP, because only it sees the visitor's real address: 100 requests per hour on the public demo's ask route with a daily token budget for the demo, and stricter limits on sign-in and sign-up. The API limits each signed-in user per minute. Counters live in shared storage so every instance enforces the same limit | 6 |
+| Rate limiting | Capping how many requests one client can make in a time window | The web server limits per IP, because only it sees the visitor's real address: 100 requests per hour on the public demo's ask route with a daily token budget for the demo, and stricter limits on sign-in and sign-up. The API limits each signed-in user to 30 questions and 20 uploads an hour. The counters live in memory, which works while the free host runs one instance; more instances would need shared storage such as Postgres or Redis | 6 |
 | DoS protection | Keeping floods of traffic from taking the service down | CDN firewall, rate limits, request size limits, timeouts and bounded queues | 6, 9 |
 | OAuth | Signing in through another provider without sharing your password | Google sign-in through Supabase Auth | 4 |
 | JWT rotation | Replacing token signing keys without logging everyone out | Supabase asymmetric signing keys. The API caches the public keys and refetches them when it sees an unknown key ID | 4 |
@@ -26,7 +26,7 @@ How Whence handles the problems production systems run into. Each row says what 
 | Database migrations | Versioned, reviewable changes to the schema | Alembic migrations, reviewed in pull requests, run by the deploy pipeline before new code goes live | 4, 9 |
 | Schema versioning | Knowing which schema version is live and changing it safely | Alembic's revision history. Breaking changes use expand then contract: add the new shape, move readers, remove the old shape later | 4 |
 | Database indexing | Data structures that make lookups fast | B-tree indexes on foreign keys and filters, HNSW for vectors, GIN for full text | 4, 6 |
-| Query optimization | Making queries cheap | `EXPLAIN ANALYZE` on hot queries and a `LIMIT` on every list. An HNSW index ranks first and filters after, so a small workspace could get too few results. pgvector's iterative index scans (version 0.8 and later) fix that, and a test checks recall on a small workspace | 6 |
+| Query optimization | Making queries cheap | `EXPLAIN ANALYZE` on hot queries and a `LIMIT` on every list. Vector search scans one workspace exactly, which takes milliseconds at a few thousand passages. Past that comes an HNSW index, which ranks first and filters after, so it needs pgvector's iterative index scans (version 0.8 and later) to keep small workspaces from getting too few results | 6 |
 | N+1 queries | Running one query per item inside a loop | Batch loading, a review checklist item, and tests that count queries | 4 |
 | Connection pooling | Reusing database connections instead of opening one per request | A connection pool in the API plus Supabase's pooler in transaction mode. That mode keeps no session state between transactions, so we turn off server-side prepared statements, and the worker's LISTEN connection uses session mode | 4 |
 | Optimistic locking | Detecting at save time that someone else changed the record | A version column on documents. A stale update fails with HTTP 409 | 5 |
@@ -50,7 +50,7 @@ How Whence handles the problems production systems run into. Each row says what 
 | Retries | Trying a failed operation again | Only for operations that are safe to repeat, with a fixed maximum | 5 |
 | Exponential backoff | Waiting longer after each failure, with random jitter so clients do not retry in sync | Job retries and model calls | 5 |
 | Idempotency | Doing something twice has the same effect as doing it once | An `Idempotency-Key` header on create routes, and duplicate uploads detected by content hash | 5 |
-| Circuit breakers | Stop calling a failing dependency for a while instead of piling up requests | Around model providers. When one is down, users get a clear message at once | 6 |
+| Circuit breakers | Stop calling a failing dependency for a while instead of piling up requests | Around model providers. When one is down, users get a clear message at once. For now, bounded retries and a clear error message do this job | Later |
 | Backpressure | Telling producers to slow down when consumers are full | Bounded worker concurrency, and HTTP 429 with `Retry-After` when queues are full | 5, 6 |
 | Message queues | Handing work to a background process | The `jobs` table in Postgres | 5 |
 | Dead letter queues | Where work goes after too many failures | Jobs move to `dead_letter` after 5 attempts, and admins can see why | 5 |
@@ -72,8 +72,8 @@ How Whence handles the problems production systems run into. Each row says what 
 
 | Concept | What it means | What Whence does | Day |
 | --- | --- | --- | --- |
-| Caching | Keeping results to avoid repeating work | Embeddings cached by content hash; answers cached per workspace and corpus version | 6 |
-| Cache invalidation | Removing stale cached data | Any document change raises the workspace's corpus version, so old cache keys stop matching | 6 |
+| Caching | Keeping results to avoid repeating work | Embeddings cached by content hash; answers cached per workspace and corpus version | Later |
+| Cache invalidation | Removing stale cached data | Any document change raises the workspace's corpus version, so old cache keys stop matching | Later |
 | CDN | Servers near users that cache files | Static assets and public pages | Later |
 | Edge caching | Caching responses at those servers | Public pages are cached. Anything tied to a session gets `Cache-Control: private, no-store` | Later |
 | Latency | How long one request takes | Measured for retrieval and for each ask on Day 4 | 6, Later |
@@ -82,7 +82,7 @@ How Whence handles the problems production systems run into. Each row says what 
 | Load balancing | Spreading traffic across instances | The hosting platform does it | 9 |
 | Reverse proxies | A server that sits in front of other servers | The CDN sits in front of everything, and the web server forwards API calls | 7, 9 |
 | API gateways | One front door that handles auth, limits and routing for APIs | At our size, FastAPI middleware does this job | 6 |
-| Horizontal scaling | Adding more instances | The API keeps no state in memory between requests, so we can run more copies | 9 |
+| Horizontal scaling | Adding more instances | The API keeps no state between requests except the rate limit counters. Those move to shared storage first, so every copy sees the same counts, and then we can run more copies | 9 |
 | Vertical scaling | Moving to a bigger instance | Usually the first step when the database needs more room, once there is a budget for it | 9 |
 | Autoscaling | Adding and removing instances automatically | Serverless functions scale on their own within the free plan's quotas. We track usage against every quota so a busy day cannot get the app suspended | 9 |
 | Cold starts | A slow first request after a period of no traffic | Free hosts sleep or cold-start when idle, and Render's free plan takes about a minute to wake. The page shows that the server is waking instead of an error, and Day 9 measures each option | 9 |
@@ -117,7 +117,7 @@ How Whence handles the problems production systems run into. Each row says what 
 | TCP vs UDP | Reliable, ordered delivery vs fast delivery without guarantees | Our traffic runs over TCP. HTTP/3 at the CDN runs on QUIC, which uses UDP | 9 |
 | WebSockets | A two-way connection that stays open | Not needed (decision 11). Server-Sent Events cover our one-way streams | - |
 | Long polling | Holding a request open until there is news | Not needed. Server-Sent Events replace it | - |
-| Server-Sent Events | A one-way stream from server to browser over HTTP | Streaming answers and document status | 6 |
+| Server-Sent Events | A one-way stream from server to browser over HTTP | Streaming answers | 6 |
 | gRPC | A binary protocol for calls between services | Not needed. We have one public HTTP API and no internal service calls | - |
 | DNS | The system that turns names into addresses | Whence uses its host's free subdomain, so the host manages the records. We explain how a request finds the host | 9 |
 | Cron jobs | Tasks that run on a schedule | Backups, cleanup of expired invites and orphaned files, nightly evaluations and the job sweep, run as scheduled GitHub Actions workflows, which are free for public repositories | 6, 9 |

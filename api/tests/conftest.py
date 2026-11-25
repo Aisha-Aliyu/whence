@@ -23,6 +23,7 @@ from app.auth import TokenVerifier
 from app.embeddings import DIMENSIONS, EmbeddingError
 from app.main import create_app
 from app.settings import Settings
+from app.workers_ai import WorkersAIError
 
 SUPABASE_URL = "https://test.supabase.co"
 ISSUER = f"{SUPABASE_URL}/auth/v1"
@@ -93,8 +94,26 @@ class FakeEmbedder:
         return [[len(text) % 7 + 1.0] * DIMENSIONS for text in texts]
 
 
+class FakeChat:
+    """Replies with a script, so no test calls Cloudflare. Keeps every prompt."""
+
+    def __init__(self) -> None:
+        self.reply = ["Refunds take five days [P1]."]
+        self.prompts: list[list[dict[str, str]]] = []
+        self.fail = False
+
+    def stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        self.prompts.append(messages)
+        if self.fail:
+            raise WorkersAIError("Workers AI is down")
+        yield from self.reply
+
+
 def make_client(
-    database_url: str, embedder: FakeEmbedder | None = None, **settings: Any
+    database_url: str,
+    embedder: FakeEmbedder | None = None,
+    chat: FakeChat | None = None,
+    **settings: Any,
 ) -> TestClient:
     config = Settings(
         database_url=database_url,
@@ -103,7 +122,8 @@ def make_client(
         **settings,
     )
     verifier = LocalVerifier(config.jwks_url, config.jwt_issuer, config.jwt_audience)
-    return TestClient(create_app(config, verifier, embedder or FakeEmbedder()))
+    app = create_app(config, verifier, embedder or FakeEmbedder(), chat or FakeChat())
+    return TestClient(app)
 
 
 @pytest.fixture(scope="session")
@@ -124,10 +144,17 @@ def embedder() -> FakeEmbedder:
 
 
 @pytest.fixture
-def client(database_url: str, embedder: FakeEmbedder) -> Iterator[TestClient]:
+def chat() -> FakeChat:
+    return FakeChat()
+
+
+@pytest.fixture
+def client(
+    database_url: str, embedder: FakeEmbedder, chat: FakeChat
+) -> Iterator[TestClient]:
     with psycopg.connect(database_url, autocommit=True) as conn:
         conn.execute("TRUNCATE whence.workspaces CASCADE")
-    with make_client(database_url, embedder) as test_client:
+    with make_client(database_url, embedder, chat) as test_client:
         yield test_client
 
 

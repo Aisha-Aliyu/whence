@@ -7,7 +7,6 @@ extracted text is kept, never the uploaded file.
 """
 
 import hashlib
-import json
 import logging
 import re
 from datetime import datetime
@@ -22,7 +21,7 @@ from pydantic import BaseModel
 
 from app.auth import CurrentUser
 from app.db import DbPool, Pool, as_user
-from app.embeddings import Embedder
+from app.embeddings import Embedder, as_vector
 from app.errors import ApiError
 from app.extract import extract, kind_of
 from app.workspaces import find
@@ -72,6 +71,7 @@ async def upload_document(
     pool: DbPool,
 ) -> Document:
     """The request body is the file itself. Owners and admins only."""
+    request.app.state.upload_limiter.hit(str(user))
     settings = request.app.state.settings
     name = clean(name)
     kind_of(name)  # refuse an unsupported type before reading the file
@@ -233,11 +233,6 @@ def embed_document(
                 "UPDATE whence.documents SET status = 'failed' WHERE id = %s",
                 (document_id,),
             )
-
-
-def as_vector(vector: list[float]) -> str:
-    """pgvector's text format, [1.5,2,3], sent as a query parameter."""
-    return json.dumps(vector, separators=(",", ":"))
 
 
 def require_editor(conn: Connection[DictRow], workspace_id: UUID, user: UUID) -> None:

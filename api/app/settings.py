@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     cloudflare_api_token: SecretStr = SecretStr("")
     max_upload_bytes: int = Field(default=10_000_000, ge=1, le=50_000_000)
     workspace_bytes: int = Field(default=50_000_000, ge=1)  # per workspace
+    # Per user. Each question costs about 130 of the 10,000 free Neurons a day.
+    questions_per_hour: int = Field(default=30, ge=1)
+    uploads_per_hour: int = Field(default=20, ge=1)
 
     @property
     def jwt_issuer(self) -> str:

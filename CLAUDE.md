@@ -23,7 +23,8 @@ Whence answers questions from a team's own documents and cites the exact passage
 - API lint and types, from `api/`: `uv run ruff check --no-fix .`, `uv run ruff format --check .` and `uv run mypy .`
 - API tests, from `api/`: `TEST_DATABASE_URL=postgresql://user:password@localhost:5432/whence_test uv run pytest`. Tests that need Postgres are skipped without it, and they wipe that database, so never point it at real data.
 - Migrations, from `api/`: `DATABASE_URL=... uv run alembic upgrade head`
-- Run the API, from `api/`: `uv run uvicorn app.main:create_app --factory --reload`, with `DATABASE_URL` and `SUPABASE_URL` set as in `api/.env.example`
+- Run the API, from `api/`: `uv run uvicorn app.main:create_app --factory --reload`, with the variables in `api/.env.example` set
+- Evaluation, from `api/`: `uv run python -m evals.run`, with the variables in `api/.env.example` set. It calls the real models and uses about 1,600 of the 10,000 free Neurons a day
 - Independent review: ask Claude Code to "use the reviewer agent to review this branch" (`.claude/agents/reviewer.md`)
 
 Every pull request that adds tooling also adds its commands to this section.

@@ -4,7 +4,7 @@ Status: draft 1, 2 November 2026. Decisions change through pull requests, and ea
 
 ## Summary
 
-A Next.js web app serves the pages and holds the user's session. When someone asks a question, the web server calls the Python API with that user's token. The API confirms who the user is and which workspace they may read, then runs a LangGraph agent. The agent searches that workspace's documents in Postgres, using vectors and keywords together, and asks a language model to answer from the passages it found and nothing else. The answer streams back as the model writes it, with a citation on every sentence. Once the answer is complete, a verification step checks each citation against its passage and flags any sentence the passage does not support. When someone uploads a file, the API keeps its text as passages, and a background task embeds them so they become searchable.
+A Next.js web app serves the pages and holds the user's session. When someone asks a question, the web server calls the Python API with that user's token. The API confirms who the user is and which workspace they may read, then runs a LangGraph agent. The agent searches that workspace's documents in Postgres, using vectors and keywords together, and asks a language model to answer from the passages it found and nothing else. The answer streams back as the model writes it, with a citation on every sentence. Once the answer is complete, a check keeps only citations to passages from this search and marks the answer unverified when a sentence has no citation. When someone uploads a file, the API keeps its text as passages, and a background task embeds them so they become searchable.
 
 ## Components
 
@@ -28,7 +28,7 @@ flowchart LR
 | Database | Workspaces, documents, passages, vectors, threads, audit log | Supabase Postgres with pgvector |
 | File storage | None. Whence keeps the text it extracts, never the uploaded file | Nothing to run |
 | Auth | Sign-up, sign-in, 2FA, password reset, Google sign-in | Supabase Auth |
-| Model providers | Embeddings and answer generation | Cloudflare Workers AI for embeddings. The answer model is chosen on Day 6 (see Open decisions) |
+| Model providers | Embeddings and answer generation | Cloudflare Workers AI: bge-small-en-v1.5 for embeddings, Llama 3.3 70B for answers |
 | Observability | Logs, traces, errors, metrics, product analytics | Chosen later, if the demo needs them |
 
 ## How a question flows
@@ -36,10 +36,10 @@ flowchart LR
 1. The browser sends the question to our own web server. Same origin, so the browser makes no cross-origin call and CORS never comes into play.
 2. The web server reads the session from an httpOnly cookie, applies per-IP rate limits, and calls `POST /v1/workspaces/{workspace_id}/ask` on the API with the access token.
 3. The API verifies the token's signature, expiry, issuer and audience. It checks that the user belongs to the workspace and applies per-user rate limits.
-4. Each database step (loading the thread, searching, saving the answer) runs in its own short transaction, which sets the user ID that row-level security policies read. No transaction stays open while the model writes, so a slow model call never holds a database connection.
-5. The agent rewrites the question into a search query using the thread so far, runs hybrid search, grades the evidence, and either answers with citations or says the documents do not cover it.
-6. The API streams the answer to the web server with Server-Sent Events, and the web server streams it on to the browser. A citation that points at anything outside this search's results is dropped before it reaches the browser.
-7. When the answer is complete, the verification step checks each citation, and the API sends any flags as a final event. Then it stores the message, its citations and flags, token counts and cost.
+4. Each database step (checking membership, searching) runs in its own short transaction, which sets the user ID that row-level security policies read. No transaction stays open while a model works, so a slow model call never holds a database connection.
+5. The agent runs hybrid search inside the workspace, then either answers from the passages with citations, or says the documents do not cover it and shows the closest passages.
+6. The API streams the answer to the web server with Server-Sent Events: `token` events while the model writes, then one `done` event with the citations, or one `error` event. The web server streams it on to the browser.
+7. The check step keeps only citations that point at a passage this search returned, and marks the answer unverified when a sentence has no citation. Token counts and the estimated cost go to the log.
 
 ## How a document flows
 
@@ -53,25 +53,19 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    q(["Question"]) --> rewrite["Turn the question and thread into a search query"]
-    rewrite --> search["Hybrid search inside this workspace only"]
-    search --> grade{"Enough relevant evidence?"}
-    grade -- "yes" --> answer["Stream the answer from these passages only, with a citation on every sentence"]
-    grade -- "no, retries left" --> retry["Rewrite the query"]
-    retry --> search
-    grade -- "no, out of retries" --> abstain["Say the documents do not cover it, show the closest passages"]
-    answer --> verify{"Does each cited passage support its sentence?"}
-    verify -- "yes" --> save(["Save the answer, citations and cost"])
-    verify -- "no" --> flag["Flag the unsupported sentences"]
-    flag --> save
-    abstain --> save
+    q(["Question"]) --> search["Hybrid search inside this workspace only"]
+    search -- "passages found" --> answer["Stream the answer from these passages only, with a citation on every sentence"]
+    search -- "nothing found" --> abstain["Say the documents do not cover it"]
+    answer --> check{"Every citation from this search, every sentence cited?"}
+    abstain --> check
+    check --> done(["Answer, citations and the closest passages"])
 ```
 
-We use a fixed graph instead of a free-roaming agent. Every path has a known maximum number of model calls, so cost and latency stay bounded, and we can test each node as a plain function. The retry loop runs at most twice.
+We use a fixed graph instead of a free-roaming agent. Every path makes at most one embedding call and one answer call, so cost and latency stay bounded, and we can test each node as a plain function.
 
-Streaming forces a trade-off. People should see the first words within the 2.5 second target in the product spec, but checking whether a passage really supports a sentence takes another model call. So the cheap check runs during streaming (every citation must point at a passage this search returned), and the full check runs once the answer is complete. A sentence that fails is flagged on screen and logged for evaluation. If evals show flags are common, we switch to holding each sentence back until it passes.
+Streaming forces a trade-off. People see the first words at once, but the check can only run when the answer is complete. So the check is cheap and structural: every citation must point at a passage this search returned, and every sentence must carry one. A model call that tests whether each passage really supports its sentence is the next step if evals show unsupported answers.
 
-Thread history lives in our own `threads` and `messages` tables, under row-level security, and the agent rebuilds its context from them for each question. We do not use LangGraph's Postgres checkpointer, because it creates its own tables outside our migrations and our row-level security.
+Each question stands alone for now; follow-up questions with thread history are cut for time. When they come, threads live in our own tables under row-level security, not in LangGraph's Postgres checkpointer, which creates its own tables outside our migrations and our row-level security.
 
 ## Data model, first draft
 
@@ -133,7 +127,7 @@ Abuse: CAPTCHA on sign-up, sign-in and password reset. The web server applies pe
 | 3 | LangGraph with a fixed graph | Bounded cost and latency, testable nodes, streaming built in | Less flexible than an open-ended tool-calling agent | Users need multi-step research across tools |
 | 4 | pgvector inside the main Postgres | Data, vectors and permissions in one place: joins, transactions and row-level security work together, and a demo fits the free plan | A dedicated vector database scales further and handles filtered search more directly | Tens of millions of passages, or filtered searches get slow |
 | 5 | Hybrid search (vectors plus full text) merged with reciprocal rank fusion | Vectors miss exact names, codes and acronyms; keywords miss paraphrases; fusion catches both | Two queries per search, a few milliseconds | Evals show one method alone scores the same |
-| 6 | Citations point at stored passage IDs, checked cheaply while the answer streams and fully once it ends | Every citation is provable against text we stored, and the first words still arrive within the latency target | A reader can see an unsupported sentence for a moment before it is flagged, and the full check adds one fast model call | Evals show flags are common (then each sentence waits until it passes) |
+| 6 | Citations point at the passages this search returned, checked once the answer ends | Every citation is provable against text we stored, and the first words arrive at once | The check is structural: it cannot tell whether a passage really supports its sentence | Evals show unsupported answers (then a model checks each sentence) |
 | 7 | Supabase Auth | Password and Google sign-in, authenticator-app 2FA (included on the free plan) and CAPTCHA without writing auth code, next to our database | We build the workspace and team model ourselves. Leaked-password protection is a paid feature, so we add our own breached-password check | We need SSO or SAML |
 | 8 | Backend for frontend: tokens in httpOnly cookies, and the browser never calls the API directly | Injected scripts cannot read tokens. The API sends no CORS headers, so browsers refuse cross-origin calls to it | One extra hop through the web server, which also has to pass streams through and apply per-IP limits | Third parties need direct API access (then we add API keys and a CORS allowlist) |
 | 9 | Workspace isolation in the API and again in Postgres row-level security | A bug in one layer does not leak data | More SQL to write and test | Not expected |
@@ -149,7 +143,7 @@ The budget is zero, so every option below has a free plan. Before we commit to o
 
 | Decision | Free options | How we decide | When |
 | --- | --- | --- | --- |
-| Answer model | Groq's free plan, whose terms forbid training on our inputs and outputs, and Cloudflare Workers AI, which gives 10,000 free Neurons a day and does not train on customer content | Eval scores, speed, and whether the free quota covers the demo | Day 6 |
+| Answer model | Llama 3.3 70B on Cloudflare Workers AI, with the same account, free plan and data terms as the embeddings. An answer uses about 130 of the 10,000 free Neurons a day, so roughly 70 questions a day. Groq's free plan was the other option | Decided for one provider, one set of data terms and a well-known instruction-following model. The eval set in `api/evals` measures it on deploy day | Day 6 |
 | Embedding model | Cloudflare Workers AI with bge-small-en-v1.5: 10,000 free Neurons a day, about 5 million tokens with this model, after which calls fail until 00:00 UTC. Cloudflare does not train on customer content, and for standard inference it keeps no inputs or outputs after the request, apart from the exceptions in [its policy](https://developers.cloudflare.com/workers-ai/platform/privacy/). A local model was the other option, at the cost of memory and start-up time on a free host | Decided for the free plan and the data terms. Recall@8 gets measured on the Day 6 eval set | Day 5 |
 | API hosting | Render's free web service, which sleeps after 15 minutes without traffic, takes about a minute to wake and has no free background workers (keeping it awake all month would use nearly all of its 750 free hours), or Python functions on Vercel Hobby, up to 5 minutes per call | Streaming support, where the worker can run, wake-up time | Day 9 |
 | Web hosting | Vercel Hobby (free for personal, non-commercial projects, which Whence is; if it ever charges money, it moves to a plan that allows that) or Cloudflare Pages | Preview deploy per pull request, CDN, plan terms | Day 9 |

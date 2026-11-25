@@ -101,7 +101,7 @@ These numbers live in private product analytics. They never appear on the websit
 
 ## Open questions
 
-- Answer model: decided on Day 6 from evaluation results, free quotas and the provider's data terms.
+- Answer model: Llama 3.3 70B on Cloudflare Workers AI, chosen on Day 6 for its free quota and data terms. The evaluation set measures it on deploy day.
 - Embedding model: bge-small-en-v1.5 on Cloudflare Workers AI, chosen on Day 5 for its free plan and data terms. Recall gets measured on the Day 6 evaluation set.
 - API hosting: decided on Day 9 from cold-start tests on free plans.
 - Domain: Whence launches on the web host's free subdomain, such as whence.vercel.app. A portfolio project does not need its own domain.
