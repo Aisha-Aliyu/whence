@@ -117,7 +117,8 @@ Privileged paths: a few jobs cannot run as one signed-in user. Each gets the nar
 
 - The ingestion worker connects as its own role. Each of its transactions sets the current job's workspace ID, and the worker's policies allow only that workspace's rows.
 - Accepting an invite runs through a `SECURITY DEFINER` database function that checks the invite token's hash and expiry before it adds the membership.
-- Deleting an account or a workspace runs through `SECURITY DEFINER` functions that check the caller owns what they delete.
+- Deleting an account runs through a `SECURITY DEFINER` function that checks the caller owns it. A workspace is deleted by its owner under row-level security.
+- Migrations run as the database owner, from a developer's machine or the deploy pipeline, never from the API. The API drops to the `whence_app` role at the start of every transaction.
 - The public demo reads one demo workspace through a read-only policy.
 - The Supabase service role key appears only in the module that calls Supabase admin APIs, never in request handlers.
 

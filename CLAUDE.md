@@ -13,12 +13,17 @@ Whence answers questions from a team's own documents and cites the exact passage
 - Auth: Supabase Auth. Never build custom authentication.
 - Database and file storage: Supabase.
 
-These folders do not exist yet. Each arrives in its own pull request, so do not create them early.
+`web/` does not exist yet. It arrives in its own pull request on Day 7, so do not create it early.
 
 ## Commands
 
 - Hook tests: `python3 -m unittest discover --start-directory .claude/hooks --verbose`
 - Hook lint and types: `uvx ruff@0.16.9 check --no-fix .claude/hooks`, `uvx ruff@0.16.9 format --check .claude/hooks` and `uvx mypy@2.3.1 --strict .claude/hooks`
+- API setup, from `api/`: `uv sync --locked`
+- API lint and types, from `api/`: `uv run ruff check --no-fix .`, `uv run ruff format --check .` and `uv run mypy .`
+- API tests, from `api/`: `TEST_DATABASE_URL=postgresql://user:password@localhost:5432/whence_test uv run pytest`. Tests that need Postgres are skipped without it, and they wipe that database, so never point it at real data.
+- Migrations, from `api/`: `DATABASE_URL=... uv run alembic upgrade head`
+- Run the API, from `api/`: `uv run uvicorn app.main:create_app --factory --reload`, with `DATABASE_URL` and `SUPABASE_URL` set as in `api/.env.example`
 - Independent review: ask Claude Code to "use the reviewer agent to review this branch" (`.claude/agents/reviewer.md`)
 
 Every pull request that adds tooling also adds its commands to this section.
