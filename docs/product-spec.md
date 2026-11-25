@@ -101,8 +101,8 @@ These numbers live in private product analytics. They never appear on the websit
 
 ## Open questions
 
-- Answer model: decided on Day 10 from evaluation results, free quotas and the provider's data terms.
-- Embedding model: decided on Day 8 from recall on our evaluation set.
-- API hosting: decided on Day 22 from cold-start tests on free plans.
+- Answer model: decided on Day 6 from evaluation results, free quotas and the provider's data terms.
+- Embedding model: decided on Day 5 from recall on our evaluation set.
+- API hosting: decided on Day 9 from cold-start tests on free plans.
 - Domain: Whence launches on the web host's free subdomain, such as whence.vercel.app. A portfolio project does not need its own domain.
 - Upload limit: 20 MB per file to start, revisited after load tests.

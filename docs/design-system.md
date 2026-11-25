@@ -1,6 +1,6 @@
 # Design system
 
-How Whence looks and behaves on screen. Components use the tokens in [design/tokens.css](../design/tokens.css) and never raw colors, sizes or font names. The web app copies that file on Day 14.
+How Whence looks and behaves on screen. Components use the tokens in [design/tokens.css](../design/tokens.css) and never raw colors, sizes or font names. The web app copies that file on Day 7.
 
 | File | What it holds |
 | --- | --- |
@@ -100,4 +100,4 @@ The wireframes cover the three screens the rest are built from:
 - [Asking a question](../design/wireframes/ask.svg), with an answer, citations and the source viewer.
 - [Documents](../design/wireframes/documents.svg), with every status a file can have.
 
-Sign-up, two-factor, members and settings reuse these layouts. Each screen gets its final design in the pull request that builds it, from Day 15.
+Sign-up, two-factor, members and settings reuse these layouts. Each screen gets its final design in the pull request that builds it, on Day 7.

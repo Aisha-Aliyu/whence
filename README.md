@@ -27,7 +27,7 @@ A Next.js web app talks to a Python API built with FastAPI. The API runs a LangG
 
 The repository opens in GitHub Codespaces with its tools installed. On the repository page, tap the green Code button, open the Codespaces tab and tap Create codespace on main. The first start takes a few minutes while the container builds.
 
-The dev container in `.devcontainer/` provides Python 3.14 with uv, Node 24, Docker and the GitHub CLI. pnpm arrives with the web app on Day 14.
+The dev container in `.devcontainer/` provides Python 3.14 with uv, Node 24, Docker and the GitHub CLI. pnpm arrives with the web app on Day 7.
 
 Codespaces is free within GitHub Free's monthly allowance of 120 core hours, which is 60 hours on the 2-core machine this container uses, and 15 GB-month of storage ([pricing](https://docs.github.com/en/billing/concepts/product-billing/github-codespaces)). On an account with no payment method, GitHub blocks Codespaces when the allowance runs out instead of charging. Stop the codespace when you finish: open github.com/codespaces, tap the three dots next to it, then Stop codespace. A stopped codespace still uses storage, so delete it from the same menu when you no longer need it.
 
