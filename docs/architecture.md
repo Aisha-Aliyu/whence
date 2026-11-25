@@ -4,7 +4,7 @@ Status: draft 1, 2 November 2026. Decisions change through pull requests, and ea
 
 ## Summary
 
-A Next.js web app serves the pages and holds the user's session. When someone asks a question, the web server calls the Python API with that user's token. The API confirms who the user is and which workspace they may read, then runs a LangGraph agent. The agent searches that workspace's documents in Postgres, using vectors and keywords together, and asks a language model to answer from the passages it found and nothing else. The answer streams back as the model writes it, with a citation on every sentence. Once the answer is complete, a verification step checks each citation against its passage and flags any sentence the passage does not support. A separate worker process turns uploaded files into searchable passages in the background.
+A Next.js web app serves the pages and holds the user's session. When someone asks a question, the web server calls the Python API with that user's token. The API confirms who the user is and which workspace they may read, then runs a LangGraph agent. The agent searches that workspace's documents in Postgres, using vectors and keywords together, and asks a language model to answer from the passages it found and nothing else. The answer streams back as the model writes it, with a citation on every sentence. Once the answer is complete, a verification step checks each citation against its passage and flags any sentence the passage does not support. When someone uploads a file, the API keeps its text as passages, and a background task embeds them so they become searchable.
 
 ## Components
 
@@ -16,11 +16,7 @@ flowchart LR
     web --> auth["Supabase Auth"]
     api -->|"verifies tokens"| auth
     api --> db[("Postgres<br/>pgvector, full text, RLS")]
-    api --> store[("Private file storage")]
     api --> models["Model providers<br/>LLM and embeddings"]
-    worker["Worker"] --> db
-    worker --> store
-    worker --> models
 ```
 
 | Part | Job | Runs on |
@@ -28,11 +24,11 @@ flowchart LR
 | Web app (`web/`) | Pages, forms, session cookies, per-IP rate limits, server-side calls to the API | Next.js on a free managed host with a CDN |
 | API (`api/`) | Token checks, input validation, per-user rate limits, the agent, streaming answers | Python and FastAPI on a free host, packaged with Docker for development and CI |
 | Agent | Turns the question into a search, retrieves, grades evidence, writes and verifies the cited answer | LangGraph, inside the API process |
-| Worker | Parses, chunks, embeds and indexes uploaded files | Same codebase as the API. Free plans include no always-on background worker, so it runs inside the API server or as one function call per job |
-| Database | Workspaces, documents, passages, vectors, jobs, threads, audit log | Supabase Postgres with pgvector |
-| File storage | Original uploaded files | Supabase Storage, private bucket |
+| Background task | Embeds new passages after the upload response | Inside the API process. Free plans include no always-on background worker |
+| Database | Workspaces, documents, passages, vectors, threads, audit log | Supabase Postgres with pgvector |
+| File storage | None. Whence keeps the text it extracts, never the uploaded file | Nothing to run |
 | Auth | Sign-up, sign-in, 2FA, password reset, Google sign-in | Supabase Auth |
-| Model providers | Embeddings and answer generation | Chosen by evaluation (see Open decisions) |
+| Model providers | Embeddings and answer generation | Cloudflare Workers AI for embeddings. The answer model is chosen on Day 6 (see Open decisions) |
 | Observability | Logs, traces, errors, metrics, product analytics | Chosen later, if the demo needs them |
 
 ## How a question flows
@@ -47,14 +43,11 @@ flowchart LR
 
 ## How a document flows
 
-1. The browser asks for an upload slot. The API checks the user's role and the workspace's storage quota, then returns a short-lived signed URL for one file in a quarantine folder.
-2. The browser uploads the file straight to storage with that URL. The file never passes through our web server, which matters because serverless hosts cap request bodies (Vercel at 4.5 MB).
-3. The browser tells the API the upload finished. The API checks the real file type from its content: a PDF must start with `%PDF-`, a Word file must open as a valid DOCX package within size and entry limits, and Markdown, text and HTML must decode as UTF-8. A file that fails is deleted.
-4. The API moves the file from quarantine to a random name in the private bucket, then inserts the document row and an ingestion job in one transaction.
-5. The worker claims the job with `SELECT ... FOR UPDATE SKIP LOCKED`, which lets several workers pull jobs at once without blocking each other. The claim sets a lease. If a worker dies, its lease expires and another worker takes the job, so every step is idempotent and writes only while the worker still holds the lease.
-6. The worker extracts text with page numbers, splits it into passages along headings, embeds the passages in batches, and writes them with their vectors and full-text index entries.
-7. A failed step retries with exponential backoff and jitter. After 5 failed attempts the job moves to a dead letter state and the document shows a clear error.
-8. When processing finishes, the document's status becomes `ready` and the workspace's corpus version goes up by one. Cached answers keyed to the old version stop matching, so no one sees a stale answer.
+1. The web server sends the file as the body of `POST /v1/workspaces/{workspace_id}/documents?name=...`. The file passes through the web server, so the web host's request limit also applies (4.5 MB on Vercel). The API checks the user's role and refuses a file name outside the allowlist (PDF, Markdown, text) before reading the body.
+2. The API reads the body and stops as soon as it passes 10 MB. The content must match the name: a PDF must start with `%PDF-` and open in the parser, and Markdown and text must decode as UTF-8 with no null bytes.
+3. A file the workspace already has, by SHA-256, returns the existing document, so a retried upload never makes a copy. Otherwise the API checks the workspace's storage quota, extracts the text with page numbers, and splits it into passages of up to 1,200 characters that never cross a page or a Markdown section. The document and its passages go in with one transaction. The file itself is never stored.
+4. The response says `processing`. After it is sent, a background task embeds the passages in batches of 50 with Cloudflare Workers AI. Timeouts, rate limits and server errors retry with exponential backoff and jitter, up to 4 attempts per batch.
+5. The document becomes `ready`, or `failed` if embedding fails, and then the person deletes it and uploads it again. If the server restarts during the task, the document stays `processing` (see decision 10).
 
 ## The agent
 
@@ -87,9 +80,8 @@ Thread history lives in our own `threads` and `messages` tables, under row-level
 | `workspaces` | Name, owner, corpus version |
 | `memberships` | User, workspace, role (owner, admin or member) |
 | `invitations` | Hash of the invite token, role, expiry |
-| `documents` | Title, type, size, SHA-256 of the content, storage path, status, version |
-| `chunks` | Passage text, page and section, token count, embedding vector, full-text vector |
-| `jobs` | Kind, status, attempts, next run time, lock owner, lease expiry, last error |
+| `documents` | Name, type, size, SHA-256 of the content, page count, status |
+| `passages` | Text, page and section, embedding vector, full-text vector |
 | `threads`, `messages` | Conversations, plus model, token counts and cost per answer |
 | `citations` | Which passages each answer cited, where, and whether verification flagged them |
 | `feedback` | Thumbs up or down with an optional reason |
@@ -126,7 +118,7 @@ Prompt injection: documents can contain text written to manipulate the model. Re
 
 Content Security Policy: images load only from our own origin. Signed-in pages use script nonces, because they render per request anyway. Cached public pages use script hashes instead, because nonces would force every page to render per request.
 
-Uploads: an allowlist of types checked by content, a 20 MB limit, single-use signed upload URLs into a quarantine folder, random storage names, a private bucket, short-lived signed URLs for viewing, and parsing in the worker with time and memory limits.
+Uploads: an allowlist of types checked by content, a 10 MB limit enforced while the body arrives, a 500-page limit for PDFs, a cap on passages per document and a storage quota per workspace. Whence keeps only the extracted text, so there are no stored files to serve, scan or leak, and document text is only ever shown as plain text.
 
 Secrets: environment variables in each environment and GitHub Actions secrets for CI and deploys. Never in git. Secret scanning runs on every push and pull request.
 
@@ -145,7 +137,7 @@ Abuse: CAPTCHA on sign-up, sign-in and password reset. The web server applies pe
 | 7 | Supabase Auth | Password and Google sign-in, authenticator-app 2FA (included on the free plan) and CAPTCHA without writing auth code, next to our database | We build the workspace and team model ourselves. Leaked-password protection is a paid feature, so we add our own breached-password check | We need SSO or SAML |
 | 8 | Backend for frontend: tokens in httpOnly cookies, and the browser never calls the API directly | Injected scripts cannot read tokens. The API sends no CORS headers, so browsers refuse cross-origin calls to it | One extra hop through the web server, which also has to pass streams through and apply per-IP limits | Third parties need direct API access (then we add API keys and a CORS allowlist) |
 | 9 | Workspace isolation in the API and again in Postgres row-level security | A bug in one layer does not leak data | More SQL to write and test | Not expected |
-| 10 | Job queue in Postgres using `SKIP LOCKED` | No extra service to run. The job is created in the same transaction as the document, so one cannot exist without the other | Lower ceiling than a dedicated broker, which only matters at thousands of jobs per second | Sustained high job volume |
+| 10 | Embedding runs as a background task in the API process, not from a job queue | Nothing extra to build or run, and the upload answers at once | A restart during the task leaves the document `processing` until someone deletes it and uploads it again | Uploads must survive restarts (then a job queue in Postgres using `SKIP LOCKED` with leases) |
 | 11 | Server-Sent Events for streaming | One-way streaming over plain HTTP that passes through proxies and CDNs | Not two-way. The ask route is a POST, so the browser reads it with fetch, which never reconnects on its own. If a stream drops, the page reloads the saved answer or offers a retry | We add live collaboration |
 | 12 | Managed hosting, no Kubernetes | The platform handles health checks, rolling deploys, TLS and scaling without an ops team | Less control and some lock-in. Free plans also sleep or cold-start when idle | Many services, or a platform team to run them |
 | 13 | Public repository | Free branch rules, secret scanning, CodeQL and CodeRabbit's open source plan, and recruiters can read the code | Anyone can read the code, so security can never rely on hiding it (it never should) | Not expected |
@@ -158,7 +150,7 @@ The budget is zero, so every option below has a free plan. Before we commit to o
 | Decision | Free options | How we decide | When |
 | --- | --- | --- | --- |
 | Answer model | Groq's free plan, whose terms forbid training on our inputs and outputs, and Cloudflare Workers AI, which gives 10,000 free Neurons a day and does not train on customer content | Eval scores, speed, and whether the free quota covers the demo | Day 6 |
-| Embedding model | A small open model on our own server, if it fits the free host's memory without slowing the wake-up, or Cloudflare Workers AI embeddings | Recall@8 on our eval set, speed, memory use on a free host | Day 5 |
+| Embedding model | Cloudflare Workers AI with bge-small-en-v1.5: 10,000 free Neurons a day, about 5 million tokens with this model, after which calls fail until 00:00 UTC. Cloudflare does not train on customer content, and for standard inference it keeps no inputs or outputs after the request, apart from the exceptions in [its policy](https://developers.cloudflare.com/workers-ai/platform/privacy/). A local model was the other option, at the cost of memory and start-up time on a free host | Decided for the free plan and the data terms. Recall@8 gets measured on the Day 6 eval set | Day 5 |
 | API hosting | Render's free web service, which sleeps after 15 minutes without traffic, takes about a minute to wake and has no free background workers (keeping it awake all month would use nearly all of its 750 free hours), or Python functions on Vercel Hobby, up to 5 minutes per call | Streaming support, where the worker can run, wake-up time | Day 9 |
 | Web hosting | Vercel Hobby (free for personal, non-commercial projects, which Whence is; if it ever charges money, it moves to a plan that allows that) or Cloudflare Pages | Preview deploy per pull request, CDN, plan terms | Day 9 |
 | Database | Supabase Free | 500 MB holds roughly tens of thousands of passages. A project pauses after a week without activity and has no automatic backups, so we run our own backups. Day 9 settles how the demo stays awake, and a keep-awake job would have to run a real database query | Day 9 |
