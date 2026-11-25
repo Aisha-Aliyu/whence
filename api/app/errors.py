@@ -17,21 +17,30 @@ STATUS_CODES = {404: "not_found", 405: "method_not_allowed"}
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str) -> None:
+    def __init__(
+        self,
+        status: int,
+        code: str,
+        message: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status, self.code, self.message = status, code, message
+        self.headers = headers or {}
 
 
-def error_response(status: int, code: str, message: str) -> JSONResponse:
-    headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
+def error_response(
+    status: int, code: str, message: str, headers: dict[str, str] | None = None
+) -> JSONResponse:
+    extra = {"WWW-Authenticate": "Bearer"} if status == 401 else {}
     body = {"error": {"code": code, "message": message}}
-    return JSONResponse(body, status_code=status, headers=headers)
+    return JSONResponse(body, status_code=status, headers=extra | (headers or {}))
 
 
 def install(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def api_error(_: Request, error: ApiError) -> JSONResponse:
-        return error_response(error.status, error.code, error.message)
+        return error_response(error.status, error.code, error.message, error.headers)
 
     @app.exception_handler(RequestValidationError)
     async def invalid(_: Request, error: RequestValidationError) -> JSONResponse:

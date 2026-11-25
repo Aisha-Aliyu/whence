@@ -5,9 +5,9 @@ documents or passages in workspace B, through the API and in the database.
 """
 
 import threading
+from typing import Any
 from uuid import UUID
 
-import httpx
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
@@ -29,14 +29,13 @@ def upload(
     workspace: str,
     data: bytes = PDF,
     name: str = "policy.pdf",
-) -> httpx.Response:
-    response: httpx.Response = client.post(
+) -> Any:  # TestClient's response type depends on the httpx package it finds
+    return client.post(
         f"/v1/workspaces/{workspace}/documents",
         params={"name": name},
         content=data,
         headers=auth(user),
     )
-    return response
 
 
 def test_an_upload_becomes_embedded_passages_with_page_numbers(
