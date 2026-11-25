@@ -64,8 +64,11 @@ def test_a_busy_model_is_retried_before_the_answer_starts() -> None:
     [
         httpx.Response(400),  # refused
         httpx.Response(200, content=b"data: {not json\n\n"),  # garbled
+        httpx.Response(200, content=b'data: {"response": "Refunds"}\n\n'),  # cut off
     ],
 )
-def test_a_refused_or_garbled_answer_is_an_error(response: httpx.Response) -> None:
+def test_a_refused_garbled_or_cut_off_answer_is_an_error(
+    response: httpx.Response,
+) -> None:
     with pytest.raises(WorkersAIError):
         list(make(lambda request: response).stream(MESSAGES))

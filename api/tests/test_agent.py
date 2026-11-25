@@ -74,6 +74,12 @@ def test_citations_to_passages_outside_this_search_are_dropped() -> None:
 def test_every_sentence_needs_a_citation() -> None:
     assert not verify("Refunds take five days. [P1] Shipping is free.", HITS).verified
     assert verify("Refunds take five days. [P1] Shipping is free [P2].", HITS).verified
+    # A quoted sentence ends at its closing quote, so it needs its own label.
+    quoted = (
+        'Refunds take five days [P1]. "All sales are final." Shipping is free [P2].'
+    )
+    assert not verify(quoted, HITS).verified
+    assert verify('The policy says "Refunds take five days." [P1]', HITS).verified
 
 
 def test_document_text_cannot_break_out_of_its_passage_block() -> None:

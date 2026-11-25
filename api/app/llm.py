@@ -63,7 +63,7 @@ class CloudflareChat:
             "stream": True,
         }
         response = self.ai.run(MODEL, body, stream=True)
-        written = 0
+        written, finished = 0, False
         usage: dict[str, int] = {}
         try:
             if response.status_code != 200:
@@ -73,6 +73,7 @@ class CloudflareChat:
                 if not line.startswith("data:") or not data:
                     continue
                 if data == "[DONE]":
+                    finished = True
                     break
                 event = json.loads(data)
                 if isinstance(event, dict):
@@ -80,6 +81,8 @@ class CloudflareChat:
                     if text := event.get("response"):
                         written += len(text)
                         yield str(text)
+            if not finished:  # the connection closed before the answer did
+                raise WorkersAIError("The answer stream ended early")
         except (httpx.HTTPError, ValueError) as error:  # a broken stream or bad JSON
             raise WorkersAIError("The answer stream broke off") from error
         finally:

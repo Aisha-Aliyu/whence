@@ -82,7 +82,7 @@ How Whence handles the problems production systems run into. Each row says what 
 | Load balancing | Spreading traffic across instances | The hosting platform does it | 9 |
 | Reverse proxies | A server that sits in front of other servers | The CDN sits in front of everything, and the web server forwards API calls | 7, 9 |
 | API gateways | One front door that handles auth, limits and routing for APIs | At our size, FastAPI middleware does this job | 6 |
-| Horizontal scaling | Adding more instances | The API keeps no state in memory between requests, so we can run more copies | 9 |
+| Horizontal scaling | Adding more instances | The API keeps no state between requests except the rate limit counters. Those move to shared storage first, so every copy sees the same counts, and then we can run more copies | 9 |
 | Vertical scaling | Moving to a bigger instance | Usually the first step when the database needs more room, once there is a budget for it | 9 |
 | Autoscaling | Adding and removing instances automatically | Serverless functions scale on their own within the free plan's quotas. We track usage against every quota so a busy day cannot get the app suspended | 9 |
 | Cold starts | A slow first request after a period of no traffic | Free hosts sleep or cold-start when idle, and Render's free plan takes about a minute to wake. The page shows that the server is waking instead of an error, and Day 9 measures each option | 9 |

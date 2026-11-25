@@ -45,7 +45,7 @@ def score(
         "found": any(hit.section == case["section"] for hit in passages),
         "correct": outcome.covered
         and any(phrase.lower() in answer for phrase in case["answer"]),
-        "cited": outcome.verified,
+        "cited": outcome.covered and outcome.verified,
     }
 
 
@@ -70,7 +70,7 @@ def main() -> None:
     account = settings.cloudflare_account_id
     token = settings.cloudflare_api_token.get_secret_value()
     embedder, chat = CloudflareEmbedder(account, token), CloudflareChat(account, token)
-    cases = json.loads((HERE / "questions.json").read_text())
+    cases = json.loads((HERE / "questions.json").read_text(encoding="utf-8"))
     user = uuid4()  # a made-up user who owns only the throwaway workspace
     with open_pool(settings.database_url.get_secret_value(), 2, 10) as pool:
         with as_user(pool, user) as conn:

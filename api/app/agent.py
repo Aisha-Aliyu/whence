@@ -23,8 +23,9 @@ from app.search import Hit
 
 NOT_COVERED = "The documents do not cover this."
 LABEL = re.compile(r"\[P(\d+)\]")
-# A sentence ends at . ! ? or at its citation labels, not before them.
-SENTENCE_BREAK = re.compile(r"(?<=[.!?\]])\s+(?!\[P)")
+# A sentence ends after . ! ? (with any closing quote or bracket) or after its
+# citation labels, never just before a label.
+SENTENCE_BREAK = re.compile(r"""(?:(?<=[.!?\]])|(?<=[.!?]["'”’)]))\s+(?!\[P)""")
 BLOCK_TAG = re.compile(r"<\s*/?\s*passage", re.IGNORECASE)
 
 SYSTEM = f"""You answer questions for a team, using only the passages you are given.

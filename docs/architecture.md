@@ -4,7 +4,7 @@ Status: draft 1, 2 November 2026. Decisions change through pull requests, and ea
 
 ## Summary
 
-A Next.js web app serves the pages and holds the user's session. When someone asks a question, the web server calls the Python API with that user's token. The API confirms who the user is and which workspace they may read, then runs a LangGraph agent. The agent searches that workspace's documents in Postgres, using vectors and keywords together, and asks a language model to answer from the passages it found and nothing else. The answer streams back as the model writes it, with a citation on every sentence. Once the answer is complete, a verification step checks each citation against its passage and flags any sentence the passage does not support. When someone uploads a file, the API keeps its text as passages, and a background task embeds them so they become searchable.
+A Next.js web app serves the pages and holds the user's session. When someone asks a question, the web server calls the Python API with that user's token. The API confirms who the user is and which workspace they may read, then runs a LangGraph agent. The agent searches that workspace's documents in Postgres, using vectors and keywords together, and asks a language model to answer from the passages it found and nothing else. The answer streams back as the model writes it, with a citation on every sentence. Once the answer is complete, a check keeps only citations to passages from this search and marks the answer unverified when a sentence has no citation. When someone uploads a file, the API keeps its text as passages, and a background task embeds them so they become searchable.
 
 ## Components
 

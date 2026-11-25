@@ -27,7 +27,7 @@ def hit(section: str) -> Hit:
 def test_every_question_points_at_a_real_section() -> None:
     handbook = extract((EVALS / "handbook.md").read_bytes(), "handbook.md")
     sections = {p.section for p in handbook.passages}
-    cases = json.loads((EVALS / "questions.json").read_text())
+    cases = json.loads((EVALS / "questions.json").read_text(encoding="utf-8"))
     assert {c["section"] for c in cases if c["section"]} <= sections
     assert any(c["answer"] is None for c in cases)  # some must not be covered
 
@@ -42,3 +42,10 @@ def test_scores_count_retrieval_answers_and_citations() -> None:
     outside = {"question": "Wi-Fi?", "section": None, "answer": None}
     assert score(outside, passages, verify(NOT_COVERED, passages))["correct"]
     assert "found: 1 of 2" in table([good, wrong])
+    # Finding nothing for a question the handbook covers earns no citation credit.
+    missed = score(case, [], verify(NOT_COVERED, []))
+    assert (missed["found"], missed["correct"], missed["cited"]) == (
+        False,
+        False,
+        False,
+    )
