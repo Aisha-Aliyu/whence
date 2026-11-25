@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="14" fill="#11141B">
+  <title>Wireframe: asking a question, desktop width 1280 px</title>
+  <rect width="1280" height="800" fill="#EDEDED"/>
+  <!-- Top bar -->
+  <rect width="1280" height="56" fill="#FFFFFF"/>
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#D3D5DA"/>
+  <path d="M28 19H24v18h4M36 19h4v18h-4" fill="none" stroke="#11141B" stroke-width="2.5"/>
+  <circle cx="32" cy="28" r="2.5" fill="#0245CF"/>
+  <text x="50" y="34" font-size="18" font-weight="600">Whence</text>
+  <rect x="150" y="12" width="180" height="32" rx="4" fill="#FFFFFF" stroke="#7A808C"/>
+  <text x="162" y="33">Workspace: Acme Ops</text>
+  <circle cx="1244" cy="28" r="16" fill="#E2E3E6"/>
+  <!-- Side navigation -->
+  <rect x="0" y="57" width="220" height="743" fill="#FFFFFF"/>
+  <rect x="12" y="76" width="196" height="40" rx="4" fill="#D9E3F8"/>
+  <text x="28" y="101" font-weight="600">Ask</text>
+  <text x="28" y="145">Documents</text>
+  <text x="28" y="185">Members</text>
+  <text x="28" y="225">Settings</text>
+  <text x="28" y="285" fill="#4B5160" font-size="13">Recent questions</text>
+  <text x="28" y="315" font-size="13">Refund rules for annual plans</text>
+  <text x="28" y="343" font-size="13">Who approves travel?</text>
+  <!-- Answer -->
+  <text x="252" y="104" font-size="20" font-weight="600">How long do customers have to ask for a refund?</text>
+  <rect x="252" y="124" width="560" height="270" rx="8" fill="#FFFFFF"/>
+  <text x="272" y="160" font-size="16">Customers on monthly plans can ask for a refund within</text>
+  <text x="272" y="186" font-size="16">14 days of a charge.</text>
+  <rect x="428" y="170" width="30" height="24" rx="4" fill="#FFFFFF" stroke="#0245CF"/>
+  <text x="443" y="187" font-family="IBM Plex Mono, ui-monospace, monospace" fill="#0245CF" text-anchor="middle">1</text>
+  <text x="272" y="222" font-size="16">Annual plans get a prorated refund for unused full months.</text>
+  <rect x="736" y="206" width="30" height="24" rx="4" fill="#FFFFFF" stroke="#0245CF"/>
+  <text x="751" y="223" font-family="IBM Plex Mono, ui-monospace, monospace" fill="#0245CF" text-anchor="middle">2</text>
+  <line x1="272" y1="250" x2="792" y2="250" stroke="#D3D5DA"/>
+  <text x="272" y="278" fill="#4B5160" font-size="13">Sources</text>
+  <text x="272" y="304" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="13">1  Billing policy.pdf, page 4</text>
+  <text x="272" y="328" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="13">2  Billing policy.pdf, page 5</text>
+  <text x="272" y="372" fill="#4B5160" font-size="13">Was this helpful?</text>
+  <rect x="396" y="354" width="56" height="28" rx="4" fill="#FFFFFF" stroke="#7A808C"/>
+  <text x="424" y="373" text-anchor="middle" font-size="13">Yes</text>
+  <rect x="460" y="354" width="56" height="28" rx="4" fill="#FFFFFF" stroke="#7A808C"/>
+  <text x="488" y="373" text-anchor="middle" font-size="13">No</text>
+  <!-- Question box -->
+  <rect x="252" y="700" width="560" height="56" rx="8" fill="#FFFFFF" stroke="#7A808C"/>
+  <text x="272" y="733" fill="#4B5160">Ask about your documents</text>
+  <rect x="716" y="708" width="88" height="40" rx="4" fill="#0245CF"/>
+  <text x="760" y="733" fill="#FFFFFF" font-weight="600" text-anchor="middle">Ask</text>
+  <!-- Source viewer -->
+  <rect x="844" y="72" width="420" height="712" rx="8" fill="#FFFFFF"/>
+  <text x="864" y="108" font-weight="600">Billing policy.pdf</text>
+  <text x="864" y="132" font-family="IBM Plex Mono, ui-monospace, monospace" fill="#4B5160" font-size="13">Page 4, source 1</text>
+  <text x="1236" y="108" text-anchor="middle" font-size="18">x</text>
+  <text x="864" y="180" fill="#4B5160">3.1 Monthly plans</text>
+  <rect x="860" y="194" width="388" height="58" fill="#D9E3F8"/>
+  <text x="864" y="216">A customer may request a refund within 14 days</text>
+  <text x="864" y="240">of any monthly charge.</text>
+  <text x="864" y="280" fill="#4B5160">Requests after 14 days are reviewed case by case</text>
+  <text x="864" y="304" fill="#4B5160">by the billing team.</text>
+  <rect x="864" y="720" width="160" height="44" rx="4" fill="#FFFFFF" stroke="#7A808C"/>
+  <text x="944" y="747" text-anchor="middle">Open document</text>
+  <!-- Notes -->
+  <text x="252" y="430" fill="#4B5160" font-size="12">Each citation is a button named "Source 1, Billing policy.pdf, page 4". It opens the passage on the right.</text>
+  <text x="252" y="450" fill="#4B5160" font-size="12">On phones the source viewer opens full screen, and Escape or the close button returns focus to the citation.</text>
+  <text x="252" y="470" fill="#4B5160" font-size="12">With no supporting passage, the answer says the documents do not cover the question.</text>
+</svg>

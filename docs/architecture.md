@@ -33,7 +33,7 @@ flowchart LR
 | File storage | Original uploaded files | Supabase Storage, private bucket |
 | Auth | Sign-up, sign-in, 2FA, password reset, Google sign-in | Supabase Auth |
 | Model providers | Embeddings and answer generation | Chosen by evaluation (see Open decisions) |
-| Observability | Logs, traces, errors, metrics, product analytics | Free plans chosen on Day 13 and Day 19 |
+| Observability | Logs, traces, errors, metrics, product analytics | Chosen later, if the demo needs them |
 
 ## How a question flows
 
@@ -156,13 +156,13 @@ The budget is zero, so every option below has a free plan. Before we commit to o
 
 | Decision | Free options | How we decide | When |
 | --- | --- | --- | --- |
-| Answer model | Groq's free plan, whose terms forbid training on our inputs and outputs, and Cloudflare Workers AI, which gives 10,000 free Neurons a day and does not train on customer content | Eval scores, speed, and whether the free quota covers the demo | Day 10 |
-| Embedding model | A small open model on our own server, if it fits the free host's memory without slowing the wake-up, or Cloudflare Workers AI embeddings | Recall@8 on our eval set, speed, memory use on a free host | Day 8 |
-| API hosting | Render's free web service, which sleeps after 15 minutes without traffic, takes about a minute to wake and has no free background workers (keeping it awake all month would use nearly all of its 750 free hours), or Python functions on Vercel Hobby, up to 5 minutes per call | Streaming support, where the worker can run, wake-up time | Day 22 |
-| Web hosting | Vercel Hobby (free for personal, non-commercial projects, which Whence is; if it ever charges money, it moves to a plan that allows that) or Cloudflare Pages | Preview deploy per pull request, CDN, plan terms | Day 22 |
-| Database | Supabase Free | 500 MB holds roughly tens of thousands of passages. A project pauses after a week without activity and has no automatic backups, so we run our own backups. Day 22 settles how the demo stays awake, and a keep-awake job would have to run a real database query | Day 22 |
-| Sign-in emails | Supabase's built-in email only reaches the project's own team, at two messages an hour, so real users need an SMTP service. Without a domain, the options are a free transactional email plan, if its terms allow sending without one, or a dedicated Gmail account over SMTP with an app password, which has a low daily cap | Delivery tests to Gmail and Outlook inboxes | Day 6 |
-| Domain | A free eu.org domain, or the host's free subdomain such as whence.vercel.app. Reported eu.org waits range from hours to over a year. is-a.dev is out, because its terms bar sites behind a login and apps similar to ChatGPT or Claude | Whether eu.org approves in time | Apply on Day 3, decide on Day 23 |
+| Answer model | Groq's free plan, whose terms forbid training on our inputs and outputs, and Cloudflare Workers AI, which gives 10,000 free Neurons a day and does not train on customer content | Eval scores, speed, and whether the free quota covers the demo | Day 6 |
+| Embedding model | A small open model on our own server, if it fits the free host's memory without slowing the wake-up, or Cloudflare Workers AI embeddings | Recall@8 on our eval set, speed, memory use on a free host | Day 5 |
+| API hosting | Render's free web service, which sleeps after 15 minutes without traffic, takes about a minute to wake and has no free background workers (keeping it awake all month would use nearly all of its 750 free hours), or Python functions on Vercel Hobby, up to 5 minutes per call | Streaming support, where the worker can run, wake-up time | Day 9 |
+| Web hosting | Vercel Hobby (free for personal, non-commercial projects, which Whence is; if it ever charges money, it moves to a plan that allows that) or Cloudflare Pages | Preview deploy per pull request, CDN, plan terms | Day 9 |
+| Database | Supabase Free | 500 MB holds roughly tens of thousands of passages. A project pauses after a week without activity and has no automatic backups, so we run our own backups. Day 9 settles how the demo stays awake, and a keep-awake job would have to run a real database query | Day 9 |
+| Sign-in emails | Supabase's built-in email only reaches the project's own team, at two messages an hour, so real users need an SMTP service. Without a domain, the options are a free transactional email plan, if its terms allow sending without one, or a dedicated Gmail account over SMTP with an app password, which has a low daily cap | Delivery tests to Gmail and Outlook inboxes | Day 4 |
+| Domain | The web host's free subdomain, such as whence.vercel.app or whence.netlify.app | Decided: a portfolio project does not need its own domain | Day 9, with the host |
 
 Free model tiers need care: some, such as Gemini's and Mistral's, may use what you send to train their models. Whence uses only providers whose terms rule that out, in production and in the public demo alike, because demo visitors type their own questions.
 

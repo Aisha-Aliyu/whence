@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 390 760" width="390" height="760" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="14" fill="#11141B">
+  <title>Wireframe: sign in, phone width 390 px</title>
+  <rect width="390" height="760" fill="#EDEDED"/>
+  <!-- Logo and name -->
+  <path d="M28 40H24v18h4M36 40h4v18h-4" fill="none" stroke="#11141B" stroke-width="2.5"/>
+  <circle cx="32" cy="49" r="2.5" fill="#0245CF"/>
+  <text x="50" y="55" font-size="18" font-weight="600">Whence</text>
+  <!-- Card -->
+  <rect x="16" y="96" width="358" height="524" rx="8" fill="#FFFFFF"/>
+  <text x="36" y="144" font-size="24" font-weight="600">Sign in</text>
+  <text x="36" y="172" fill="#4B5160">Answers from your team's documents, with sources.</text>
+  <text x="36" y="216" font-weight="500">Work email</text>
+  <rect x="36" y="226" width="318" height="44" rx="4" fill="#FFFFFF" stroke="#7A808C"/>
+  <text x="36" y="302" font-weight="500">Password</text>
+  <rect x="36" y="312" width="318" height="44" rx="4" fill="#FFFFFF" stroke="#7A808C"/>
+  <text x="304" y="339" fill="#0245CF" font-weight="500">Show</text>
+  <rect x="36" y="380" width="318" height="48" rx="4" fill="#0245CF"/>
+  <text x="195" y="409" fill="#FFFFFF" font-weight="600" text-anchor="middle">Sign in</text>
+  <text x="36" y="460" fill="#0245CF" text-decoration="underline">Forgot your password?</text>
+  <line x1="36" y1="488" x2="354" y2="488" stroke="#D3D5DA"/>
+  <rect x="36" y="504" width="318" height="48" rx="4" fill="#FFFFFF" stroke="#7A808C"/>
+  <text x="195" y="533" font-weight="500" text-anchor="middle">Continue with Google</text>
+  <text x="36" y="590">New to Whence? <tspan fill="#0245CF" text-decoration="underline">Create an account</tspan></text>
+  <!-- Footer -->
+  <text x="16" y="652" fill="#4B5160" font-size="13">Privacy   Terms   Cookies   Accessibility</text>
+  <!-- Notes -->
+  <text x="16" y="680" fill="#4B5160" font-size="12">Labels sit above inputs. Errors appear under the field with an icon and words.</text>
+  <text x="16" y="700" fill="#4B5160" font-size="12">After sign-in with 2FA on, the next screen asks for the 6-digit code.</text>
+  <text x="16" y="720" fill="#4B5160" font-size="12">Width 280 px still fits: the card loses its side margin, nothing scrolls sideways.</text>
+</svg>

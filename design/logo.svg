@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Whence">
+  <!-- A citation mark: brackets around a source. Brackets take the text color, the dot is signal blue. -->
+  <path d="M12 7H8v18h4M20 7h4v18h-4" fill="none" stroke="currentColor" stroke-width="3"/>
+  <circle cx="16" cy="16" r="3" fill="#0245CF"/>
+</svg>
