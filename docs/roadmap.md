@@ -17,8 +17,8 @@ Whence is a portfolio project, so the plan aims at a working demo in nine days. 
 
 ## Build
 
-- [ ] Day 4, API and database. FastAPI with a health check and settings from environment variables, Postgres with pgvector on Supabase, migrations, row-level security, Supabase sign-in checked by the API, workspace roles, a test that one workspace cannot see another's data, and CI for lint, types and tests. Concepts: migrations, row-level security, JWT, RBAC.
-- [ ] Day 5, documents. Upload with file checks and private storage, text extraction with page numbers, chunking, embeddings and processing status. Concepts: idempotency, retries.
+- [x] Day 4, API and database. FastAPI with a health check and settings from environment variables, Postgres with pgvector on Supabase, migrations, row-level security, Supabase sign-in checked by the API, workspace roles, a test that one workspace cannot see another's data, and CI for lint, types and tests. Concepts: migrations, row-level security, JWT, RBAC.
+- [ ] Day 5, documents. Upload with file checks, text extraction with page numbers, chunking, embeddings and processing status. Concepts: idempotency, retries.
 - [ ] Day 6, asking. Hybrid search, the LangGraph agent with citations and "the documents do not cover this" answers, streaming, rate limits, and a small evaluation set. Concepts: RAG, prompt injection, rate limiting.
 - [ ] Day 7, web app. Next.js with the design tokens: sign in, documents, asking with the source viewer, a landing page, privacy and terms pages, and a 404 page. Concepts: XSS, CSP, secure cookies.
 

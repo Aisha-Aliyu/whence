@@ -7,7 +7,7 @@ so no test calls Supabase.
 
 import os
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
 from app.auth import TokenVerifier
+from app.embeddings import DIMENSIONS, EmbeddingError
 from app.main import create_app
 from app.settings import Settings
 
@@ -51,14 +52,58 @@ def make_token(
     return jwt.encode(payload, key, algorithm=algorithm, headers={"kid": "test"})
 
 
-def make_client(database_url: str) -> TestClient:
-    settings = Settings(
-        database_url=database_url, supabase_url=SUPABASE_URL, db_timeout_seconds=2
+def make_pdf(pages: list[str]) -> bytes:
+    """A minimal PDF with one line of text on each page."""
+    kids = " ".join(f"{4 + 2 * i} 0 R" for i in range(len(pages)))
+    objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{kids}] /Count {len(pages)} >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    for i, text in enumerate(pages):
+        stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET"
+        objects.append(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]"
+            f" /Resources << /Font << /F1 3 0 R >> >> /Contents {5 + 2 * i} 0 R >>"
+        )
+        objects.append(f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream")
+    pdf = "%PDF-1.4\n"
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf += f"{number} 0 obj\n{body}\nendobj\n"
+    table = "".join(f"{offset:010d} 00000 n \n" for offset in offsets)
+    pdf += (
+        f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n{table}"
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{len(pdf)}\n%%EOF\n"
     )
-    verifier = LocalVerifier(
-        settings.jwks_url, settings.jwt_issuer, settings.jwt_audience
+    return pdf.encode("ascii")
+
+
+class FakeEmbedder:
+    """Made-up vectors, so no test calls Cloudflare. Set fail to simulate an outage."""
+
+    def __init__(self) -> None:
+        self.fail = False
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        if self.fail:
+            raise EmbeddingError("Workers AI is down")
+        return [[len(text) % 7 + 1.0] * DIMENSIONS for text in texts]
+
+
+def make_client(
+    database_url: str, embedder: FakeEmbedder | None = None, **settings: Any
+) -> TestClient:
+    config = Settings(
+        database_url=database_url,
+        supabase_url=SUPABASE_URL,
+        db_timeout_seconds=2,
+        **settings,
     )
-    return TestClient(create_app(settings, verifier))
+    verifier = LocalVerifier(config.jwks_url, config.jwt_issuer, config.jwt_audience)
+    return TestClient(create_app(config, verifier, embedder or FakeEmbedder()))
 
 
 @pytest.fixture(scope="session")
@@ -74,10 +119,15 @@ def database_url() -> Iterator[str]:
 
 
 @pytest.fixture
-def client(database_url: str) -> Iterator[TestClient]:
+def embedder() -> FakeEmbedder:
+    return FakeEmbedder()
+
+
+@pytest.fixture
+def client(database_url: str, embedder: FakeEmbedder) -> Iterator[TestClient]:
     with psycopg.connect(database_url, autocommit=True) as conn:
         conn.execute("TRUNCATE whence.workspaces CASCADE")
-    with make_client(database_url) as test_client:
+    with make_client(database_url, embedder) as test_client:
         yield test_client
 
 

@@ -6,15 +6,16 @@ requires-python = ">=3.13"
 dependencies = [
     "alembic==1.20.1",
     "fastapi==0.164.0",
+    "httpx==0.28.1",
     "psycopg[binary,pool]==3.3.9",
     "pydantic-settings==2.16.3",
     "pyjwt[crypto]==2.15.1",
+    "pypdf==7.1.1",
     "uvicorn==0.54.0",
 ]
 
 [dependency-groups]
 dev = [
-    "httpx==0.28.1",
     "mypy==2.4.1",
     "pytest==9.2.0",
     "ruff==0.17.5",

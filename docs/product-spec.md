@@ -16,11 +16,11 @@ First target users: teams of 5 to 200 people who have documents but no dedicated
 
 ## What Whence does
 
-1. You upload documents: PDF, Word (DOCX), Markdown, plain text and HTML.
+1. You upload documents: PDF, Markdown and plain text.
 2. You ask a question in plain language.
 3. Whence answers in a few sentences. Every claim carries a citation, and each citation opens the exact passage with its page or section highlighted.
 4. When your documents do not contain the answer, Whence says so and shows the closest passages it found. It does not guess.
-5. When you delete a document, answers stop using it at once. When you upload a new version, answers switch to it as soon as processing finishes.
+5. When you delete a document, answers stop using it at once.
 
 ## Scope for version 1
 
@@ -30,7 +30,7 @@ In scope:
 
 - Accounts: email and password with strength rules, Google sign-in, email verification, two-factor authentication with an authenticator app, CAPTCHA on sign-up, sign-in and password reset.
 - Workspaces: create, rename, invite by email, roles (owner, admin, member), leave, delete.
-- Documents: upload (20 MB per file to start), processing status, replace, delete, a storage limit per workspace.
+- Documents: upload (10 MB per file), processing status, delete, a storage limit of 50 MB per workspace.
 - Ask: threads with follow-up questions, answers that stream in as they are written, inline citations, a source viewer, copy an answer with its citations, thumbs up or down with an optional reason.
 - Admin: members and roles, an audit log (uploads, deletions, role changes, sign-ins), usage per day (questions asked and tokens used against the free quotas).
 - Public demo: a read-only workspace with openly licensed documents, no account needed, strict limits.
@@ -102,7 +102,7 @@ These numbers live in private product analytics. They never appear on the websit
 ## Open questions
 
 - Answer model: decided on Day 6 from evaluation results, free quotas and the provider's data terms.
-- Embedding model: decided on Day 5 from recall on our evaluation set.
+- Embedding model: bge-small-en-v1.5 on Cloudflare Workers AI, chosen on Day 5 for its free plan and data terms. Recall gets measured on the Day 6 evaluation set.
 - API hosting: decided on Day 9 from cold-start tests on free plans.
 - Domain: Whence launches on the web host's free subdomain, such as whence.vercel.app. A portfolio project does not need its own domain.
-- Upload limit: 20 MB per file to start, revisited after load tests.
+- Upload limit: 10 MB per file, and 4.5 MB in practice while uploads pass through a Vercel-hosted web server.
