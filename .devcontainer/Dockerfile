@@ -4,6 +4,6 @@
 #
 # The build runs as root so the features can install. devcontainer.json logs you in
 # as the image's non-root user, vscode.
-FROM ghcr.io/astral-sh/uv:0.13.6 AS uv
-FROM mcr.microsoft.com/devcontainers/python:3-3.14-trixie
+FROM ghcr.io/astral-sh/uv:0.13.9 AS uv
+FROM mcr.microsoft.com/devcontainers/python:3.15-trixie
 COPY --from=uv /uv /uvx /bin/
